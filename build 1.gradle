@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'hu.djstudio.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'hu.djstudio.app'
+        minSdk 24
+        targetSdk 34
+        versionCode 3
+        versionName '2.1'
+    }
+
+    // fixed signing key: looked up next to this file, in the project root or in the repository root
+    def ks = ['djstudio.keystore', '../djstudio.keystore', '../../djstudio.keystore'].collect { file(it) }.find { it.exists() }
+
+    signingConfigs {
+        if (ks != null) {
+            djstudio {
+                storeFile ks
+                storePassword 'djstudio2'
+                keyAlias 'djstudio'
+                keyPassword 'djstudio2'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ks != null ? signingConfigs.djstudio : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+}
