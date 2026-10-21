@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="hu"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0c0d10">
+<title>DJ Studio 2.0</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <button class="tb pri" data-c="lib">☰ Zenék</button>
+    <div id="logo">DJ<b>STUDIO</b> <small>2.0</small></div>
+    <div id="midiSt" class="tl"></div>
+    <div class="sp"></div>
+    <button class="tb" data-c="colorType">COLOR: FILTER</button>
+    <div class="knob xs" data-c="colorParam"><i></i></div>
+    <button class="tb" data-c="settings">⚙</button>
+    <button class="tb" data-c="help">?</button>
+    <button class="tb rec" data-c="rec">● REC</button>
+    <div class="knob xs" data-c="masterVol"><i></i></div>
+    <div id="mMeter"><div></div></div>
+  </div>
+  <canvas id="wave"></canvas>
+  <div id="main">
+    <div class="slot" id="slotL"></div>
+    <div id="mixer"><div id="strips"></div>
+      <div id="xfw"><span>A</span><div class="sld" id="xfader" data-c="xfader"><div class="tr"></div><div class="ctr"></div><div class="th"></div></div><span>B</span></div>
+    </div>
+    <div class="slot" id="slotR"></div>
+  </div>
+
+  <div id="lib" class="sheet">
+    <div class="shead">
+      <input class="txt" id="q" placeholder="Keresés a SoundCloudon…" enterkeyhint="search">
+      <button class="sb pri" id="qGo">🔍</button>
+      <button class="sb" data-tab="likes">♥ Kedveltek</button>
+      <button class="sb" data-tab="analyzed">✓ Elemzett</button>
+      <button class="sb" id="fileBtn">📁 Saját zene</button><input type="file" id="file" accept="audio/*" multiple hidden>
+      <div class="sp"></div>
+      <button class="sb close" data-close="lib">✕</button>
+    </div>
+    <div class="shead2">
+      <button class="sb" id="sortBtn">Rendezés: alap</button>
+      <button class="sb" id="matchBtn">Csak illők</button>
+      <button class="sb" id="anaBtn">⚡ Lista elemzése</button>
+      <button class="sb" data-tab="profile">👤 Profil</button>
+      <div class="sp"></div><span class="hintl">Koppints a sorra → betöltés a kiválasztott deckre, vagy válassz: A B C D</span>
+    </div>
+    <div id="libList"></div>
+  </div>
+
+  <div id="fxPick" class="sheet"><div class="shead"><h2 id="fxPickT">Beat FX</h2><div class="sp"></div><button class="sb close" data-close="fxPick">✕</button></div><div id="fxGrid"></div></div>
+
+  <div id="gridPanel" class="sheet"><div class="shead"><h2 id="gridT">Beatgrid</h2><div class="sp"></div><button class="sb close" data-close="gridPanel">✕</button></div>
+    <p id="gridInfo"></p>
+    <div class="grow"><span>Rács eltolása</span><button class="sb" data-g="l20">◀◀ 20 ms</button><button class="sb" data-g="l5">◀ 5 ms</button><button class="sb" data-g="r5">5 ms ▶</button><button class="sb" data-g="r20">20 ms ▶▶</button></div>
+    <div class="grow"><span>1. ütem</span><button class="sb" data-g="lb">◀ 1 ütés</button><button class="sb" data-g="rb">1 ütés ▶</button><button class="sb" data-g="here">1. ütem = most</button></div>
+    <div class="grow"><span>BPM</span><button class="sb" data-g="half">÷2</button><button class="sb" data-g="dbl">×2</button><button class="sb" data-g="m01">−0.01</button><button class="sb" data-g="p01">+0.01</button><button class="sb" data-g="tap">TAP</button><button class="sb" data-g="reset">Eredeti</button></div>
+  </div>
+
+  <div id="settings" class="sheet"><div class="shead"><h2>⚙ Beállítások</h2><div class="sp"></div><button class="sb close" data-close="settings">✕</button></div>
+    <div class="srow"><span>Hullámforma</span><div data-set="theme"><button class="sb" data-v="rgb">RGB</button><button class="sb" data-v="whitered">Fehér–piros</button><button class="sb" data-v="vice">Vice City</button><button class="sb" data-v="blue3">Kék 3 sáv</button></div></div>
+    <div class="srow"><span>Color FX</span><div data-set="color"><button class="sb" data-v="filter">FILTER</button><button class="sb" data-v="space">SPACE</button><button class="sb" data-v="dubecho">DUB ECHO</button><button class="sb" data-v="sweep">SWEEP</button><button class="sb" data-v="noise">NOISE</button><button class="sb" data-v="crush">CRUSH</button></div></div>
+    <div class="srow"><span>Master Tempo</span><div data-set="mt"><button class="sb" data-v="1">Be</button><button class="sb" data-v="0">Ki</button></div></div>
+    <div class="srow"><span>Auto Gain</span><div data-set="ag"><button class="sb" data-v="1">Be</button><button class="sb" data-v="0">Ki</button></div></div>
+    <div class="srow"><span>Jog wheel</span><div data-set="jog"><button class="sb" data-v="nudge">Nudge (tempó)</button><button class="sb" data-v="seek">Tekerés</button></div></div>
+    <div class="srow"><span>Rezgés gombnyomáskor</span><div data-set="vib"><button class="sb" data-v="1">Be</button><button class="sb" data-v="0">Ki</button></div></div>
+    <div class="srow"><span>Hullámforma nagyítás</span><div><button class="sb" data-c="zoomOut">－</button><button class="sb" data-c="zoomIn">＋</button></div></div>
+    <div class="srow"><span>MIDI (DDJ-1000)</span><div><button class="sb" data-c="learn">MIDI tanítás</button><button class="sb" id="midiReset">Alaphelyzet</button></div></div>
+  </div>
+
+  <div id="help" class="sheet"><div class="shead"><h2>? Gyors útmutató</h2><div class="sp"></div><button class="sb close" data-close="help">✕</button></div>
+    <div class="hcols"><div>
+      <p><b>1.</b> ☰ <b>Zenék</b> → keress vagy nyisd meg a saját zenéidet, majd koppints az <b>A</b> / <b>B</b> gombra.</p>
+      <p><b>2.</b> ▶ az A decken. A B decken <b>SYNC</b> → automatikusan ütemre áll.</p>
+      <p><b>3.</b> Indítsd a B-t, és a lenti <b>crossfaderrel</b> úsztasd át.</p>
+      <p><b>4.</b> Átúsztatáskor a bejövő számon húzd le a <b>LOW</b> tekerőt.</p>
+      <p><b>Zöld hangnem</b> = harmonikusan illik. <b>K-SYNC</b> = hangnem igazítás.</p>
+    </div><div>
+      <p><b>Tekerők:</b> húzd fel/le. <b>Dupla koppintás</b> = alaphelyzet.</p>
+      <p><b>Jog wheel:</b> forgasd – lejátszás közben finom tempóigazítás, megállítva tekerés.</p>
+      <p><b>Hot cue:</b> koppintás = beállít / ugrik, <b>hosszan nyomva</b> = törlés.</p>
+      <p><b>Deck betű</b> (A/B) koppintás = váltás C/D deckre.</p>
+      <p><b>Hullámforma</b> húzása = tekerés, dupla koppintás = nagyítás.</p>
+      <p><b>DDJ-1000:</b> USB-OTG kábellel a telefonra/tabletre dugva működik.</p>
+    </div></div>
+  </div>
+  <div id="toast"></div>
+</div>
+<script>
+function store(k, v) { try { if (v === undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); } catch (e) { return null; } }
+</script>
+<script src="js/sc.js"></script>
+<script src="js/analysis.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/wave.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/midi.js"></script>
+</body></html>
