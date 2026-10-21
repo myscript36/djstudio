@@ -6,26 +6,32 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-
-      - uses: android-actions/setup-android@v3
 
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
+      - name: Projekt keresése
+        run: |
+          F=$(find . -name settings.gradle | head -1)
+          if [ -z "$F" ]; then echo "HIBA: nincs feltöltve a settings.gradle - a zip teljes tartalmát töltsd fel!"; ls -R | head -50; exit 1; fi
+          D=$(dirname "$F"); echo "Projekt mappa: $D"; ls -la "$D"
+          echo "PROJ=$D" >> $GITHUB_ENV
+          echo "sdk.dir=$ANDROID_HOME" > "$D/local.properties"
+
       - name: APK fordítása
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: cd "$PROJ" && gradle assembleRelease --no-daemon --stacktrace
 
       - name: APK átnevezése
-        run: cp app/build/outputs/apk/release/app-release.apk DJStudio-2.0.apk
+        run: cp "$PROJ"/app/build/outputs/apk/release/app-release.apk DJStudio-2.0.apk
 
       - uses: actions/upload-artifact@v4
         with:
