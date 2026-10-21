@@ -10,24 +10,28 @@ android {
         applicationId 'hu.djstudio.app'
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName '2.1'
+        versionCode 4
+        versionName '2.2'
     }
 
+    // fixed signing key: looked up next to this file, in the project root or in the repository root
+    def ks = ['djstudio.keystore', '../djstudio.keystore', '../../djstudio.keystore'].collect { file(it) }.find { it.exists() }
+
     signingConfigs {
-        // fixed key in the project, so every new build installs over the previous one
-        djstudio {
-            storeFile file('djstudio.keystore')
-            storePassword 'djstudio2'
-            keyAlias 'djstudio'
-            keyPassword 'djstudio2'
+        if (ks != null) {
+            djstudio {
+                storeFile ks
+                storePassword 'djstudio2'
+                keyAlias 'djstudio'
+                keyPassword 'djstudio2'
+            }
         }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.djstudio
+            signingConfig ks != null ? signingConfigs.djstudio : signingConfigs.debug
         }
     }
 

@@ -13,7 +13,7 @@ var SC = (function () {
       if (type) x.responseType = type;
       x.onload = function () {
         if (x.status >= 200 && x.status < 300) {
-          var fin = null; try { fin = x.getResponseHeader('X-Final-URL'); } catch (e) {}
+          var fin = null; try { if (/x-final-url/i.test(x.getAllResponseHeaders() || '')) fin = x.getResponseHeader('X-Final-URL'); } catch (e) {}
           res({ data: type ? x.response : x.responseText, url: fin || x.responseURL || u, status: x.status });
         } else { var e = new Error('HTTP ' + x.status); e.status = x.status; log('HIBA ' + x.status + ' ' + u.split('?')[0]); rej(e); }
       };

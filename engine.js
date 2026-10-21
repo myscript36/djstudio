@@ -1,9 +1,14 @@
 /* Audio engine: 4 decks, mixer, EQ, Color FX, Beat FX, master tempo, key shift, sync, loops, cues, recording */
 var Engine = (function () {
   var AC = window.AudioContext || window.webkitAudioContext;
-  var ctx;
-  try { ctx = new AC({ sampleRate: 44100, latencyHint: 'interactive' }); } catch (e) { ctx = new AC(); }
-  var SR = ctx.sampleRate;
+  var ctx, CFG = (typeof store === 'function' && store('settings_m')) || {};
+  // audio buffer size (settings → "Hangpuffer"): bigger buffer = no dropouts on slower phones
+  var LATS = { low: 'interactive', mid: 'balanced', high: 'playback', max: 0.2 }, latH = LATS[CFG.lat || 'high'] || 'playback';
+  try { ctx = new AC({ sampleRate: 44100, latencyHint: latH }); } catch (e) { try { ctx = new AC({ latencyHint: latH }); } catch (e2) { ctx = new AC(); } }
+  var SR = ctx.sampleRate, ECO = CFG.perf === 'eco';
+  // scheduling look-ahead: every start / seek / tempo change is scheduled this far ahead so the
+  // audio thread and the position model stay sample-exact (no drift, no flams after sync)
+  function LA() { var b = ctx.baseLatency || 0.02; return Math.min(0.12, Math.max(0.025, b * 1.5 + 0.012)); }
 
   function db(x) { return Math.pow(10, x / 20); }
   function clamp(x, a, b) { return x < a ? a : x > b ? b : x; }
@@ -11,13 +16,15 @@ var Engine = (function () {
   /* ---------- master ---------- */
   var master = ctx.createGain(); master.gain.value = db(-3);
   var limiter = ctx.createDynamicsCompressor();
-  limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.1;
+  limiter.knee.value = 0; limiter.attack.value = 0.002; limiter.release.value = 0.1;
+  function setLimiter(on) { limiter.threshold.value = on ? -1.5 : 0; limiter.ratio.value = on ? 20 : 1; }
+  setLimiter(CFG.lim !== '0');
   var mAn = ctx.createAnalyser(); mAn.fftSize = 1024;
   limiter.connect(mAn); limiter.connect(ctx.destination);
   var recDest = ctx.createMediaStreamDestination ? ctx.createMediaStreamDestination() : null;
   if (recDest) limiter.connect(recDest);
 
-  var xfader = 0, decks = [], colorType = 'filter';
+  var xfader = 0, decks = [], colorType = 'filter', xfCurve = CFG.xf || 'smooth';
 
   /* ---------- shared buffers ---------- */
   function impulse(sec, decay, damp) {
@@ -71,52 +78,78 @@ var Engine = (function () {
     }
     this.f = 1; this.set(1);
   }
-  Shifter.prototype.set = function (f) {
+  Shifter.prototype.set = function (f, when) {
     this.f = f;
-    var amp = (1 - f) * this.P, t = ctx.currentTime, base = this.base;
+    var amp = (1 - f) * this.P, t = Math.max(ctx.currentTime, when || 0), base = this.base;
     this.taps.forEach(function (tp) { tp.mg.gain.setValueAtTime(amp, t); tp.d.delayTime.setValueAtTime(base + (amp < 0 ? -amp : 0), t); });
   };
+  Shifter.prototype.lat = function () { return this.base + Math.abs(1 - this.f) * this.P / 2; };
   Shifter.prototype.destroy = function () { this.srcs.forEach(function (s) { try { s.stop(); } catch (e) {} }); try { this.in.disconnect(); this.out.disconnect(); } catch (e) {} };
 
   /* ---------- Pioneer DJM-style BEAT FX ---------- */
   var B16 = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 3 / 4, 1, 2, 4, 8, 16], B8 = [1 / 8, 1 / 4, 1 / 2, 3 / 4, 1, 2, 4, 8, 16], B64 = [1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32, 64];
   var FX = {
-    delay: { name: 'DELAY', p: B8, d: 3 / 4, u: 'b', mix: 'tail', help: 'Egyetlen késleltetett ismétlés, ütemre. LEVEL = effekt aránya.' },
-    echo: { name: 'ECHO', p: B8, d: 1 / 2, u: 'b', mix: 'tail', help: 'Lecsengő visszhang ütemre; kikapcsolás után szépen kifut. LEVEL = arány és visszacsatolás.' },
-    pingpong: { name: 'PING PONG', p: B16, d: 1 / 2, u: 'b', mix: 'tail', help: 'Bal–jobb oldal között pattogó visszhang. LEVEL = arány.' },
-    spiral: { name: 'SPIRAL', p: B8, d: 1 / 2, u: 'b', mix: 'tail', help: 'Sűrű, spirálisan emelkedő visszhang-zengetés. LEVEL = arány és visszacsatolás.' },
-    reverb: { name: 'REVERB', p: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100], d: 60, u: '%', mix: 'tail', help: 'Zengetés; a ◀ ▶ a terem méretét állítja (1–100%). LEVEL = arány.' },
-    trans: { name: 'TRANS', p: B16, d: 1 / 4, u: 'b', mix: 'insert', help: 'Ütemre kapuzza (szaggatja) a hangot. LEVEL = vágás mélysége.' },
-    filter: { name: 'FILTER', p: B64, d: 4, u: 'b', mix: 'blend', help: 'Rezonáns szűrő söprés; a ◀ ▶ a ciklus hossza ütemben. LEVEL = mélység.' },
-    flanger: { name: 'FLANGER', p: B64, d: 8, u: 'b', mix: 'blend', help: 'Sugárhajtómű-söprés; ciklus ütemben. LEVEL = mélység / visszacsatolás.' },
-    phaser: { name: 'PHASER', p: B64, d: 4, u: 'b', mix: 'blend', help: 'Lebegő fázis-söprés; ciklus ütemben. LEVEL = mélység.' },
-    pitch: { name: 'PITCH', p: [-50, -25, -12, -6, 6, 12, 25, 50, 100], d: 25, u: 'pct', mix: 'blend', help: 'Hangmagasság-eltolás (−50% … +100%). LEVEL = arány.' },
-    sliproll: { name: 'SLIP ROLL', p: B16, d: 1 / 4, u: 'b', mix: 'roll', help: 'Ütemrész ismétlése; ütemváltáskor újra rögzít. A szám a háttérben fut tovább.' },
-    roll: { name: 'ROLL', p: B16, d: 1 / 4, u: 'b', mix: 'roll', help: 'A bekapcsoláskor rögzített ütemrészt ismétli. LEVEL = arány.' },
+    delay: { name: 'DELAY', p: B8, d: 3 / 4, u: 'b', mix: 'tail', xn: 'HANGSZÍN', xd: 0.7, help: 'Egyetlen késleltetett ismétlés, ütemre. LEVEL = effekt aránya.' },
+    echo: { name: 'ECHO', p: B8, d: 1 / 2, u: 'b', mix: 'tail', xn: 'VISSZACSAT.', xd: 0.5, help: 'Lecsengő visszhang ütemre; kikapcsolás után szépen kifut. LEVEL = arány.' },
+    pingpong: { name: 'PING PONG', p: B16, d: 1 / 2, u: 'b', mix: 'tail', xn: 'VISSZACSAT.', xd: 0.5, help: 'Bal–jobb oldal között pattogó visszhang. LEVEL = arány.' },
+    spiral: { name: 'SPIRAL', p: B8, d: 1 / 2, u: 'b', mix: 'tail', xn: 'VISSZACSAT.', xd: 0.6, help: 'Sűrű, spirálisan emelkedő visszhang-zengetés. LEVEL = arány.' },
+    reverb: { name: 'REVERB', p: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100], d: 60, u: '%', mix: 'tail', xn: 'HANGSZÍN', xd: 0.6, help: 'Zengetés; a ◀ ▶ a terem méretét állítja (1–100%). LEVEL = arány.' },
+    trans: { name: 'TRANS', p: B16, d: 1 / 4, u: 'b', mix: 'insert', xn: 'LÁGYSÁG', xd: 0.25, help: 'Ütemre kapuzza (szaggatja) a hangot. LEVEL = vágás mélysége.' },
+    filter: { name: 'FILTER', p: B64, d: 4, u: 'b', mix: 'blend', xn: 'REZONANCIA', xd: 0.45, help: 'Rezonáns szűrő söprés; a ◀ ▶ a ciklus hossza ütemben. LEVEL = mélység.' },
+    flanger: { name: 'FLANGER', p: B64, d: 8, u: 'b', mix: 'blend', xn: 'VISSZACSAT.', xd: 0.6, help: 'Sugárhajtómű-söprés; ciklus ütemben. LEVEL = mélység.' },
+    phaser: { name: 'PHASER', p: B64, d: 4, u: 'b', mix: 'blend', xn: 'VISSZACSAT.', xd: 0.5, help: 'Lebegő fázis-söprés; ciklus ütemben. LEVEL = mélység.' },
+    pitch: { name: 'PITCH', p: [-50, -25, -12, -6, 6, 12, 25, 50, 100], d: 25, u: 'pct', mix: 'blend', xn: 'FINOM', xd: 0.5, help: 'Hangmagasság-eltolás (−50% … +100%). LEVEL = arány.' },
+    sliproll: { name: 'SLIP ROLL', p: B16, d: 1 / 4, u: 'b', mix: 'roll', xn: 'LECSENGÉS', xd: 1, help: 'Ütemrész ismétlése; ütemváltáskor újra rögzít. A szám a háttérben fut tovább.' },
+    roll: { name: 'ROLL', p: B16, d: 1 / 4, u: 'b', mix: 'roll', xn: 'LECSENGÉS', xd: 1, help: 'A bekapcsoláskor rögzített ütemrészt ismétli. LEVEL = arány.' },
     vinylbrake: { name: 'VINYL BRAKE', p: B16, d: 1, u: 'b', mix: 'action', help: 'Lemezjátszó-fék: a megadott ütemhossz alatt lelassul és megáll.' },
-    helix: { name: 'HELIX', p: B16, d: 1 / 2, u: 'b', mix: 'roll', help: 'Rögzíti és ismétli a hangot, minden körben eltolt hangmagassággal. LEVEL = irány és mérték.' },
+    helix: { name: 'HELIX', p: B16, d: 1 / 2, u: 'b', mix: 'roll', xn: 'HANGSZÍN', xd: 0.8, help: 'Rögzíti és ismétli a hangot, minden körben eltolt hangmagassággal. LEVEL = irány és mérték.' },
     backspin: { name: 'BACKSPIN', p: B16, d: 1, u: 'b', mix: 'action', x: 1, help: 'Visszapörgetés, majd megállás (extra).' },
     reverse: { name: 'REVERSE', p: [1], d: 1, u: '', mix: 'action', x: 1, help: 'Visszafelé játszás, kikapcsoláskor ott folytatja, ahol a szám tartana (extra).' },
-    bitcrush: { name: 'BITCRUSH', p: [12, 10, 8, 6, 5, 4, 3, 2], d: 6, u: 'bit', mix: 'blend', x: 1, help: 'Lo-fi bitcsökkentés (extra). LEVEL = arány.' },
-    distortion: { name: 'DISTORTION', p: [1, 2, 4, 8, 16, 32], d: 8, u: 'x', mix: 'blend', x: 1, help: 'Torzítás, a ◀ ▶ az erősség (extra).' },
-    ringmod: { name: 'RING MOD', p: [30, 60, 120, 250, 500, 1000, 2000], d: 250, u: 'Hz', mix: 'blend', x: 1, help: 'Fémes, robotos gyűrűmoduláció (extra).' },
-    noise: { name: 'NOISE', p: [200, 500, 1000, 2000, 4000, 8000, 12000], d: 2000, u: 'Hz', mix: 'add', x: 1, help: 'Fehérzaj buildupokhoz; ◀ ▶ = szín (extra). LEVEL = mennyiség.' }
+    bitcrush: { name: 'BITCRUSH', p: [12, 10, 8, 6, 5, 4, 3, 2], d: 6, u: 'bit', mix: 'blend', x: 1, xn: 'HANGSZÍN', xd: 0.7, help: 'Lo-fi bitcsökkentés (extra). LEVEL = arány.' },
+    distortion: { name: 'DISTORTION', p: [1, 2, 4, 8, 16, 32], d: 8, u: 'x', mix: 'blend', x: 1, xn: 'HANGSZÍN', xd: 0.6, help: 'Torzítás, a ◀ ▶ az erősség (extra).' },
+    ringmod: { name: 'RING MOD', p: [30, 60, 120, 250, 500, 1000, 2000], d: 250, u: 'Hz', mix: 'blend', x: 1, xn: 'HANGSZÍN', xd: 0.7, help: 'Fémes, robotos gyűrűmoduláció (extra).' },
+    noise: { name: 'NOISE', p: [200, 500, 1000, 2000, 4000, 8000, 12000], d: 2000, u: 'Hz', mix: 'add', x: 1, xn: 'REZONANCIA', xd: 0.2, help: 'Fehérzaj buildupokhoz; ◀ ▶ = szín (extra). LEVEL = mennyiség.' }
   };
   var FX_ORDER = Object.keys(FX);
   function fmtBeat(v) { if (v >= 1) return String(v); var n = Math.round(1 / v); return Math.abs(1 / n - v) < 1e-6 ? '1/' + n : '3/4'; }
   function fxLabel(type, v) { var u = FX[type].u; return u === 'b' ? fmtBeat(v) : u === '%' ? v + '%' : u === 'pct' ? (v > 0 ? '+' : '') + v + '%' : u === '' ? '–' : v + ' ' + u; }
   var irCache = {};
-  function reverbIR(pct) { if (!irCache[pct]) irCache[pct] = impulse(0.35 + pct / 100 * 5.2, 3.2 - pct / 100 * 1.4, 0.55); return irCache[pct]; }
+  function reverbIR(pct) { if (!irCache[pct]) irCache[pct] = impulse(0.35 + pct / 100 * (ECO ? 2.4 : 5.2), 3.2 - pct / 100 * 1.4, 0.55); return irCache[pct]; }
+  function toneHz(x) { return 1200 * Math.pow(2, x * 3.9); } // 1.2 kHz … 18 kHz
 
   function FxUnit(o) {
     var g = ctx;
-    this.o = o; this.N = []; this.h = {}; this.type = null; this.on = false; this.level = 0.5; this.param = 1;
-    this.input = g.createGain(); this.output = g.createGain();
+    this.o = o; this.N = []; this.h = {}; this.type = null; this.on = false; this.level = 0.5; this.param = 1; this.x = 0.5; this.bands = [1, 1, 1];
+    this.input = g.createGain(); this.output = g.createGain(); this.fin = g.createGain(); this.direct = g.createGain();
     this.dry = g.createGain(); this.send = g.createGain(); this.send.gain.value = 0; this.wet = g.createGain(); this.wet.gain.value = 0;
-    this.input.connect(this.dry); this.dry.connect(this.output);
-    this.input.connect(this.send); this.wet.connect(this.output);
+    this.input.connect(this.direct); this.direct.connect(this.fin);
+    this.fin.connect(this.dry); this.dry.connect(this.output);
+    this.fin.connect(this.send); this.wet.connect(this.output);
+    this.split = null;
   }
   var F = FxUnit.prototype;
+  /* LOW / MID / HI band select: perfect-reconstruction split (lo + mid + hi == input, sample exact).
+     Selected bands go through the effect, the others bypass it untouched. */
+  F.setBands = function (b) {
+    b = [b[0] ? 1 : 0, b[1] ? 1 : 0, b[2] ? 1 : 0]; if (!b[0] && !b[1] && !b[2]) b = [1, 1, 1];
+    this.bands = b; var all = b[0] && b[1] && b[2], g = ctx, t = ctx.currentTime;
+    if (!all && !this.split) {
+      var S = this.split = {}, inp = this.input;
+      function bq(tp, f) { var x = g.createBiquadFilter(); x.type = tp; x.frequency.value = f; x.Q.value = 0.7071; return x; }
+      S.l1 = bq('lowpass', 220); S.l2 = bq('lowpass', 220); S.h1 = bq('highpass', 2600); S.h2 = bq('highpass', 2600);
+      S.nl = g.createGain(); S.nl.gain.value = -1; S.nh = g.createGain(); S.nh.gain.value = -1; S.mid = g.createGain();
+      inp.connect(S.l1); S.l1.connect(S.l2); inp.connect(S.h1); S.h1.connect(S.h2);
+      inp.connect(S.mid); S.l2.connect(S.nl); S.nl.connect(S.mid); S.h2.connect(S.nh); S.nh.connect(S.mid);
+      S.sel = []; S.byp = [];
+      [S.l2, S.mid, S.h2].forEach(function (src, i) { var a = g.createGain(), y = g.createGain(); a.gain.value = 0; y.gain.value = 0; src.connect(a); src.connect(y); a.connect(this.fin); y.connect(this.output); S.sel.push(a); S.byp.push(y); }, this);
+    }
+    if (this.split) {
+      var S2 = this.split;
+      for (var i = 0; i < 3; i++) { S2.sel[i].gain.setTargetAtTime(all ? 0 : b[i], t, 0.006); S2.byp[i].gain.setTargetAtTime(all ? 0 : 1 - b[i], t, 0.006); }
+      this.direct.gain.setTargetAtTime(all ? 1 : 0, t, 0.006);
+      if (all) { var self = this, sp = this.split; clearTimeout(this.splitT); this.splitT = setTimeout(function () { if (self.split !== sp || !(self.bands[0] && self.bands[1] && self.bands[2])) return; [sp.l1, sp.l2, sp.h1, sp.h2, sp.nl, sp.nh, sp.mid].concat(sp.sel, sp.byp).forEach(function (n) { try { n.disconnect(); } catch (e) {} }); try { self.input.disconnect(); } catch (e) {} self.input.connect(self.direct); self.split = null; }, 300); }
+    }
+  };
   F.bpm = function () { var b = this.o.bpm(); return b > 30 ? b : 120; };
   F.beatSec = function () { return 60 / this.bpm(); };
   F.secs = function () { return clamp(this.param * this.beatSec(), 0.004, 28); };
@@ -129,15 +162,15 @@ var Engine = (function () {
     if (type === this.type) return;
     killNodes(this.N); this.N = []; this.h = {};
     try { this.send.disconnect(); } catch (e) {}
-    this.type = type; this.param = FX[type].d;
-    var g = ctx, S = this.send, W = this.wet, h = this.h, N = this.N, self = this;
+    this.type = type; this.param = FX[type].d; if (FX[type].xd != null) this.x = FX[type].xd;
+    var g = ctx, S = this.send, W = this.wet, h = this.h, N = this.N;
     function bq(t, f, q) { var b = g.createBiquadFilter(); b.type = t; b.frequency.value = f; if (q != null) b.Q.value = q; N.push(b); return b; }
     function gn(v) { var x = g.createGain(); x.gain.value = v; N.push(x); return x; }
     function dl(t, max) { var d = g.createDelay(max || 30); d.delayTime.value = t; N.push(d); return d; }
     var T = this.secs();
     if (type === 'delay' || type === 'echo') {
       var d = dl(T), fb = gn(type === 'echo' ? 0.55 : 0), hp = bq('highpass', 160, 0.5), lp = bq('lowpass', type === 'echo' ? 6500 : 12000, 0.5);
-      S.connect(d); d.connect(hp); hp.connect(lp); lp.connect(fb); fb.connect(d); lp.connect(W); h.d = d; h.fb = fb;
+      S.connect(d); d.connect(hp); hp.connect(lp); lp.connect(fb); fb.connect(d); lp.connect(W); h.d = d; h.fb = fb; h.tone = lp;
     } else if (type === 'pingpong') {
       var l = dl(T), r = dl(T), f1 = gn(0.6), f2 = gn(0.6), pl = g.createStereoPanner(), pr = g.createStereoPanner(), lpp = bq('lowpass', 7000, 0.5); pl.pan.value = -1; pr.pan.value = 1; N.push(pl, pr);
       S.connect(lpp); lpp.connect(l); l.connect(pl); pl.connect(W); l.connect(f1); f1.connect(r); r.connect(pr); pr.connect(W); r.connect(f2); f2.connect(l);
@@ -146,11 +179,11 @@ var Engine = (function () {
       var sd = dl(T), sf = gn(0.75), bp = bq('bandpass', 1400, 0.7), sw = this.lfo('sawtooth', 8), swg = gn(2400);
       sw.connect(swg); swg.connect(bp.detune); S.connect(sd); sd.connect(bp); bp.connect(sf); sf.connect(sd); bp.connect(W); h.d = sd; h.fb = sf; h.l = sw; h.lb = 8;
     } else if (type === 'reverb') {
-      var cv = g.createConvolver(); cv.buffer = reverbIR(this.param); N.push(cv); var pre = bq('highpass', 220, 0.6), pd = dl(0.012, 1);
-      S.connect(pre); pre.connect(pd); pd.connect(cv); cv.connect(W); h.cv = cv;
+      var cv = g.createConvolver(); cv.buffer = reverbIR(this.param); N.push(cv); var pre = bq('highpass', 220, 0.6), pd = dl(0.012, 1), rt = bq('lowpass', 9000, 0.5);
+      S.connect(pre); pre.connect(pd); pd.connect(cv); cv.connect(rt); rt.connect(W); h.cv = cv; h.tone = rt;
     } else if (type === 'trans') {
       var vg = gn(0.5), sq = this.lfo('square', this.param), sm = bq('lowpass', 220), dg = gn(0.5);
-      sq.connect(sm); sm.connect(dg); dg.connect(vg.gain); S.connect(vg); vg.connect(W); h.l = sq; h.lt = sm; h.lb = this.param; h.vg = vg; h.dg = dg; h.trans = 1;
+      sq.connect(sm); sm.connect(dg); dg.connect(vg.gain); S.connect(vg); vg.connect(W); h.l = sq; h.lt = sm; h.lb = this.param; h.vg = vg; h.dg = dg; h.trans = 1; h.sm = sm;
     } else if (type === 'filter') {
       var fl = bq('lowpass', 900, 7), ls = this.lfo('sine', this.param), lg = gn(0);
       ls.connect(lg); lg.connect(fl.detune); S.connect(fl); fl.connect(W); h.l = ls; h.lt = lg; h.lb = this.param; h.lg = lg; h.lgMax = 3600; h.flt = fl;
@@ -167,15 +200,15 @@ var Engine = (function () {
     } else if (type === 'sliproll' || type === 'roll' || type === 'helix') {
       var rin = gn(0), rd = dl(T, 30), rfb = gn(0), lpr = bq('lowpass', type === 'helix' ? 9000 : 20000, 0.5);
       S.connect(rin); rin.connect(rd); rd.connect(lpr); lpr.connect(W);
-      if (type === 'helix') { var hs = new Shifter(0.05); N.push({ disconnect: function () { hs.destroy(); } }); lpr.connect(hs.in); hs.out.connect(rfb); h.sh = hs; }
+      if (type === 'helix') { var hs = new Shifter(0.05); N.push({ disconnect: function () { hs.destroy(); } }); lpr.connect(hs.in); hs.out.connect(rfb); h.sh = hs; h.tone = lpr; }
       else lpr.connect(rfb);
       rfb.connect(rd); h.rin = rin; h.d = rd; h.fb = rfb; h.roll = 1;
     } else if (type === 'bitcrush') {
-      var ws = g.createWaveShaper(); N.push(ws); var lc = bq('lowpass', 9000, 0.5); S.connect(ws); ws.connect(lc); lc.connect(W); h.ws = ws;
+      var ws = g.createWaveShaper(); N.push(ws); var lc = bq('lowpass', 9000, 0.5); S.connect(ws); ws.connect(lc); lc.connect(W); h.ws = ws; h.tone = lc;
     } else if (type === 'distortion') {
-      var wd = g.createWaveShaper(); wd.oversample = '2x'; N.push(wd); var tone = bq('lowpass', 7000, 0.5), mk = gn(0.6); S.connect(wd); wd.connect(tone); tone.connect(mk); mk.connect(W); h.ws = wd; h.mk = mk;
+      var wd = g.createWaveShaper(); wd.oversample = '2x'; N.push(wd); var tone = bq('lowpass', 7000, 0.5), mk = gn(0.6); S.connect(wd); wd.connect(tone); tone.connect(mk); mk.connect(W); h.ws = wd; h.mk = mk; h.tone = tone;
     } else if (type === 'ringmod') {
-      var rg = gn(0), ro = g.createOscillator(); ro.frequency.value = this.param; ro.start(); N.push(ro); ro.connect(rg.gain); S.connect(rg); rg.connect(W); h.ro = ro;
+      var rg = gn(0), ro = g.createOscillator(), rlp = bq('lowpass', 9000, 0.5); ro.frequency.value = this.param; ro.start(); N.push(ro); ro.connect(rg.gain); S.connect(rg); rg.connect(rlp); rlp.connect(W); h.ro = ro; h.tone = rlp;
     } else if (type === 'noise') {
       var ns = g.createBufferSource(); ns.buffer = NOISE; ns.loop = true; ns.start(); N.push(ns); var nf = bq('highpass', this.param, 1.6), ng = gn(0); ns.connect(nf); nf.connect(ng); ng.connect(W); h.nf = nf; h.ng = ng;
     }
@@ -196,12 +229,14 @@ var Engine = (function () {
     this.retime(); this.apply();
   };
   F.setLevel = function (v) { this.level = clamp(v, 0, 1); this.apply(); };
+  F.setX = function (v) { this.x = clamp(v, 0, 1); this.apply(); };
+  F.rollFb = function () { return this.type === 'helix' ? 0.75 + this.x * 0.2 : 0.55 + this.x * 0.45; };
   F.capture = function () {
     var h = this.h, t = ctx.currentTime, L = this.secs(), q = Math.min(L, this.beatSec()), w = this.o.quant() ? this.waitFor(q / this.beatSec()) : 0, t0 = t + w;
     if (w > q * 0.85) { t0 = t; w = 0; } // pressed right on the grid line
     h.d.delayTime.cancelScheduledValues(t); h.d.delayTime.setValueAtTime(this.type === 'helix' ? Math.max(0.01, L - 0.004) : L, t);
     h.rin.gain.cancelScheduledValues(t); h.rin.gain.setValueAtTime(0, t); h.rin.gain.setValueAtTime(1, t0); h.rin.gain.setValueAtTime(0, t0 + L);
-    h.fb.gain.cancelScheduledValues(t); h.fb.gain.setValueAtTime(0, t); h.fb.gain.setValueAtTime(this.type === 'helix' ? 0.93 : 1, t0 + L);
+    h.fb.gain.cancelScheduledValues(t); h.fb.gain.setValueAtTime(0, t); h.fb.gain.setValueAtTime(this.rollFb(), t0 + L);
     var lv = this.level, mixT = t0 + L;
     this.dry.gain.cancelScheduledValues(t); this.wet.gain.cancelScheduledValues(t);
     this.dry.gain.setValueAtTime(this.dry.gain.value, t); this.wet.gain.setValueAtTime(this.wet.gain.value, t);
@@ -211,35 +246,38 @@ var Engine = (function () {
   };
   F.apply = function () {
     var T = this.type; if (!T) return;
-    var m = FX[T].mix, on = this.on, L = this.level, t = ctx.currentTime, h = this.h, P = this.param;
+    var m = FX[T].mix, on = this.on, L = this.level, X = this.x, t = ctx.currentTime, h = this.h, P = this.param;
     function set(p, v) { p.cancelScheduledValues(t); p.setTargetAtTime(v, t, 0.012); }
+    if (h.tone) h.tone.frequency.setTargetAtTime(toneHz(X), t, 0.03);
     if (m === 'roll') {
       set(this.send.gain, 1);
       if (!on) { set(this.dry.gain, 1); set(this.wet.gain, 0); set(h.fb.gain, 0); set(h.rin.gain, 0); }
-      else if (h.sh) h.sh.set(Math.pow(2, (L - 0.5) * 2 / 12));
+      else { if (h.sh) h.sh.set(Math.pow(2, (L - 0.5) * 2 / 12)); if (this.wet.gain.value > 0.001) set(h.fb.gain, this.rollFb()); }
       if (on && this.wet.gain.value > 0.001) { set(this.dry.gain, 1 - L); set(this.wet.gain, L); }
       return;
     }
     if (m === 'tail') {
-      set(this.dry.gain, 1); set(this.send.gain, on ? 1 : 0); set(this.wet.gain, L * (T === 'reverb' ? 1.1 : 0.95));
-      if (h.fb && T === 'echo') set(h.fb.gain, 0.3 + L * 0.45);
-      if (h.fb && T === 'spiral') set(h.fb.gain, 0.55 + L * 0.35);
-      if (h.fb && T === 'pingpong') { set(h.fb.gain, 0.35 + L * 0.35); set(h.fb2.gain, 0.35 + L * 0.35); }
+      // Pioneer-style: LEVEL/DEPTH = wet amount, X = feedback / tone, tails ring out after OFF
+      set(this.dry.gain, 1); set(this.send.gain, on ? 1 : 0); set(this.wet.gain, L * (T === 'reverb' ? 1.15 : 1));
+      if (T === 'echo') set(h.fb.gain, 0.1 + X * 0.82);
+      if (T === 'spiral') set(h.fb.gain, 0.45 + X * 0.48);
+      if (T === 'pingpong') { set(h.fb.gain, 0.15 + X * 0.75); set(h.fb2.gain, 0.15 + X * 0.75); }
       return;
     }
     if (m === 'insert') { // TRANS: full signal through the gate
       set(this.dry.gain, on ? 0 : 1); set(this.send.gain, on ? 1 : 0); set(this.wet.gain, on ? 1 : 0);
       set(h.vg.gain, 1 - L / 2); set(h.dg.gain, L / 2);
+      if (h.sm) h.sm.frequency.setTargetAtTime(30 * Math.pow(30, 1 - X), t, 0.02);
       return;
     }
-    if (m === 'add') { set(this.dry.gain, 1); set(this.send.gain, 0); set(this.wet.gain, on ? 1 : 0); if (h.ng) set(h.ng.gain, on ? L * 0.35 : 0); if (h.nf) h.nf.frequency.setTargetAtTime(P, t, 0.05); return; }
+    if (m === 'add') { set(this.dry.gain, 1); set(this.send.gain, 0); set(this.wet.gain, on ? 1 : 0); if (h.ng) set(h.ng.gain, on ? L * 0.35 : 0); if (h.nf) { h.nf.frequency.setTargetAtTime(P, t, 0.05); h.nf.Q.setTargetAtTime(0.5 + X * 14, t, 0.05); } return; }
     if (m === 'blend') {
       var mixw = L, mixd = 1 - L;
-      if (T === 'flanger' || T === 'phaser') { mixd = 1 - L * 0.5; mixw = 0.35 + L * 0.35; if (h.fb) set(h.fb.gain, T === 'flanger' ? 0.3 + L * 0.6 : 0.2 + L * 0.6); }
-      if (T === 'filter') { set(h.lg.gain, h.lgMax * (0.35 + L * 0.65)); mixd = 0; mixw = 1; }
-      if (T === 'pitch' && h.sh) h.sh.set(clamp(1 + P / 100, 0.5, 2));
-      if (T === 'bitcrush' && h.ws) h.ws.curve = crushCurve(P);
-      if (T === 'distortion' && h.ws) { h.ws.curve = driveCurve(1 + P * 1.5); }
+      if (T === 'flanger' || T === 'phaser') { mixd = 1 - L * 0.5; mixw = 0.35 + L * 0.35; if (h.fb) set(h.fb.gain, T === 'flanger' ? X * 0.93 : X * 0.85); }
+      if (T === 'filter') { set(h.lg.gain, h.lgMax * (0.35 + L * 0.65)); h.flt.Q.setTargetAtTime(0.8 + X * 15, t, 0.03); mixd = 0; mixw = 1; }
+      if (T === 'pitch' && h.sh) h.sh.set(clamp((1 + P / 100) * Math.pow(2, (X - 0.5) * 2 / 12), 0.5, 2));
+      if (T === 'bitcrush' && h.ws && h.bits !== P) { h.bits = P; h.ws.curve = crushCurve(P); }
+      if (T === 'distortion' && h.ws && h.drv !== P) { h.drv = P; h.ws.curve = driveCurve(1 + P * 1.5); }
       if (T === 'ringmod' && h.ro) h.ro.frequency.setTargetAtTime(P, t, 0.02);
       set(this.dry.gain, on ? mixd : 1); set(this.send.gain, on ? 1 : 0); set(this.wet.gain, on ? mixw : 0);
       return;
@@ -291,7 +329,8 @@ var Engine = (function () {
 
     var g = ctx;
     this.input = g.createGain();
-    this.shifter = new Shifter();
+    this.shifter = null; // created only while Master Tempo / key shift is active (saves CPU)
+    this.r0 = 1; this.prev = null;
     this.trim = g.createGain();
     this.lowEq = g.createBiquadFilter(); this.lowEq.type = 'lowshelf'; this.lowEq.frequency.value = 220;
     this.midEq = g.createBiquadFilter(); this.midEq.type = 'peaking'; this.midEq.frequency.value = 1000; this.midEq.Q.value = 0.6;
@@ -304,9 +343,17 @@ var Engine = (function () {
     this.meter = g.createAnalyser(); this.meter.fftSize = 512;
     this.byG = g.createGain(); this.shG = g.createGain(); this.shG.gain.value = 0; this.shActive = false;
     this.input.connect(this.byG); this.byG.connect(this.trim);
-    this.input.connect(this.shifter.in); this.shifter.out.connect(this.shG); this.shG.connect(this.trim);
-    this.trim.connect(this.lowEq); this.lowEq.connect(this.midEq); this.midEq.connect(this.hiEq);
-    this.hiEq.connect(this.lpf); this.lpf.connect(this.hpf);
+    this.shG.connect(this.trim);
+    this.lowEq.connect(this.midEq); this.midEq.connect(this.hiEq);
+    // DJM isolator EQ: Linkwitz-Riley 4th order 3-band split (flat sum), every band can be killed fully
+    function lr(tp, f) { var a = g.createBiquadFilter(), b = g.createBiquadFilter(); a.type = b.type = tp; a.frequency.value = b.frequency.value = f; a.Q.value = b.Q.value = 0.7071; a.connect(b); return [a, b]; }
+    var iL = lr('lowpass', 250), iR = lr('highpass', 250), iM = lr('lowpass', 2500), iH = lr('highpass', 2500), iAp = g.createBiquadFilter();
+    iAp.type = 'allpass'; iAp.frequency.value = 2500; iAp.Q.value = 0.7071;
+    this.iso = { inL: iL[0], inR: iR[0], gL: g.createGain(), gM: g.createGain(), gH: g.createGain(), out: g.createGain() };
+    iL[1].connect(iAp); iAp.connect(this.iso.gL); iR[1].connect(iM[0]); iR[1].connect(iH[0]); iM[1].connect(this.iso.gM); iH[1].connect(this.iso.gH);
+    this.iso.gL.connect(this.iso.out); this.iso.gM.connect(this.iso.out); this.iso.gH.connect(this.iso.out);
+    this.eqMode = null; this.setEqMode(CFG.eq || 'classic');
+    this.hiEq.connect(this.lpf); this.iso.out.connect(this.lpf); this.lpf.connect(this.hpf);
     this.hpf.connect(this.cDry); this.cDry.connect(this.post);
     this.hpf.connect(this.cSend); this.cRet.connect(this.post);
     var self = this;
@@ -327,8 +374,15 @@ var Engine = (function () {
   D.beatLen = function () { return this.an ? 60 / this.an.bpm : 0.5; };
   D.duration = function () { return this.buf ? this.buf.duration : 0; };
 
-  D.pos = function () {
-    var now = ctx.currentTime, sp = this.special;
+  D.setEqMode = function (m) {
+    if (m === this.eqMode) return; this.eqMode = m;
+    try { this.trim.disconnect(); } catch (e) {}
+    if (m === 'iso') { this.trim.connect(this.iso.inL); this.trim.connect(this.iso.inR); } else this.trim.connect(this.lowEq);
+    var self = this; ['hi', 'mid', 'low'].forEach(function (k) { self.setVal(k, self.vals[k]); });
+  };
+  D.pos = function () { return this.posAt(ctx.currentTime); };
+  D.posAt = function (now) {
+    var sp = this.special;
     if (sp) {
       var dt = Math.max(0, now - sp.t0);
       if (sp.kind === 'brake') { var tt = Math.min(dt, sp.len); return clamp(sp.p0 + sp.r * (tt - tt * tt / (2 * sp.len)), 0, this.duration()); }
@@ -336,12 +390,18 @@ var Engine = (function () {
       if (sp.kind === 'reverse') return clamp(sp.p0 - dt * sp.r, 0, this.duration());
     }
     if (!this.playing) return this.startPos;
-    var p = this.startPos + (now - this.startCtx) * this.rate();
+    var s0 = this.startPos, t0 = this.startCtx, r0 = this.r0;
+    if (now < t0) { var pv = this.prev; if (pv && now >= pv.t) { s0 = pv.p; t0 = pv.t; r0 = pv.r; } else return pv ? pv.p : s0; }
+    var p = s0 + (now - t0) * r0;
     if (this.loopOn && this.loop && p > this.loop.e) { var L = this.loop.e - this.loop.s; p = this.loop.s + ((p - this.loop.s) % L); }
     if (p > this.duration()) p = this.duration();
     return p;
   };
-  D.anchor = function () { var p = this.pos(); this.startPos = p; this.startCtx = ctx.currentTime; };
+  D.anchor = function () { var p = this.pos(); this.startPos = p; this.startCtx = ctx.currentTime; this.prev = null; };
+  // audible position (compensates the Master Tempo shifter delay) – used for phase / sync
+  D.outLat = function () { return this.shActive && this.shifter ? this.shifter.lat() : 0; };
+  D.apos = function (t) { return this.posAt(t == null ? ctx.currentTime : t) - this.outLat() * this.r0; };
+  D.nextT = function () { return ctx.currentTime + LA(); };
 
   D.load = function (buf, meta, an) {
     this.endSpecial(true); this.stopSrc(); this.playing = false;
@@ -349,39 +409,53 @@ var Engine = (function () {
     this.startPos = an ? Math.max(0, an.grid0) : 0; this.cue = this.startPos;
     this.hot = [null, null, null, null, null, null, null, null];
     this.loop = null; this.loopOn = false; this.loopInPos = null; this.corr = 0; this.bend = 0; this.keyShift = 0;
+    this.prev = null; this.r0 = this.rate();
     this.applyShift();
     if (this.sync) this.doSync(false);
   };
 
-  D.stopSrc = function () {
+  D.stopSrc = function (when) {
     if (!this.src) return;
-    var s = this.src, sg = this.srcGain, t = ctx.currentTime;
+    var s = this.src, sg = this.srcGain, t = Math.max(ctx.currentTime, when || 0);
     s.onended = null;
-    try { sg.gain.cancelScheduledValues(t); sg.gain.setValueAtTime(sg.gain.value, t); sg.gain.linearRampToValueAtTime(0, t + 0.012); s.stop(t + 0.015); } catch (e) { try { s.stop(); } catch (e2) {} }
-    setTimeout(function () { try { sg.disconnect(); } catch (e) {} }, 100);
+    try { sg.gain.cancelScheduledValues(t); sg.gain.setValueAtTime(1, t); sg.gain.linearRampToValueAtTime(0, t + 0.008); s.stop(t + 0.01); } catch (e) { try { s.stop(); } catch (e2) {} }
+    setTimeout(function () { try { sg.disconnect(); } catch (e) {} }, (t - ctx.currentTime) * 1000 + 150);
     this.src = null; this.srcGain = null;
   };
-  D.startSrc = function (at) {
+  /* start the buffer at position `at`, sample-exactly at context time `when` (default: next safe time).
+     An already running source is cross-faded out at the same instant (click-free seek). */
+  D.startSrc = function (at, when) {
     if (!this.buf) return;
-    var s = ctx.createBufferSource(), sg = ctx.createGain(), t = ctx.currentTime;
-    s.buffer = this.buf; s.playbackRate.value = this.rate();
+    var now = ctx.currentTime, t = Math.max(now + LA(), when || 0), wasPlaying = !!this.src;
+    if (wasPlaying) { this.prev = { p: this.startPos, t: this.startCtx, r: this.r0 }; this.stopSrc(t); } else this.prev = null;
+    var s = ctx.createBufferSource(), sg = ctx.createGain();
+    this.r0 = this.rate();
+    s.buffer = this.buf; s.playbackRate.value = this.r0;
     if (this.loopOn && this.loop) { s.loop = true; s.loopStart = this.loop.s; s.loopEnd = this.loop.e; }
-    sg.gain.setValueAtTime(0, t); sg.gain.linearRampToValueAtTime(1, t + 0.012);
+    sg.gain.value = 0; sg.gain.setValueAtTime(0, t); sg.gain.linearRampToValueAtTime(1, t + 0.008);
     s.connect(sg); sg.connect(this.input);
     at = clamp(at, 0, this.buf.duration - 0.01);
     s.start(t, at);
     var self = this;
     s.onended = function () {
-      if (self.src === s) { self.playing = false; self.startPos = self.duration(); self.src = null; self.corr = 0; Engine.electMaster(); }
+      if (self.src === s) { self.playing = false; self.startPos = self.duration(); self.src = null; self.corr = 0; self.prev = null; Engine.electMaster(); }
     };
     this.src = s; this.srcGain = sg; this.startPos = at; this.startCtx = t;
+  };
+  /* sample-accurate scheduled start (used by SYNC start and the AI DJ) */
+  D.playAt = function (when, at) {
+    if (this.special) this.endSpecial(true);
+    if (!this.buf) return;
+    this.playing = true; this.startSrc(at, when); Engine.electMaster();
   };
   D.play = function () {
     if (this.special) this.endSpecial(true);
     if (!this.buf || this.playing) return;
     if (this.startPos >= this.duration() - 0.05) this.startPos = this.cue;
-    this.playing = true; this.startSrc(this.startPos);
-    if (this.sync) this.doSync(true);
+    this.playing = true;
+    if (this.sync) this.doSync(false);
+    this.startSrc(this.startPos);
+    if (this.sync) { var m = Engine.masterDeck(); if (m && m !== this && m.playing) this.alignPhase(m); }
     Engine.electMaster();
   };
   D.pause = function () {
@@ -394,7 +468,7 @@ var Engine = (function () {
     if (!this.buf) return;
     p = clamp(p, 0, this.duration() - 0.01);
     if (this.loopOn && this.loop && (p < this.loop.s - 0.001 || p > this.loop.e + 0.001)) { this.loopOn = false; }
-    if (this.playing) { this.stopSrc(); this.startSrc(p); } else this.startPos = p;
+    if (this.playing) this.startSrc(p); else this.startPos = p;
   };
   D.snap = function (p) {
     if (!this.an || !this.quant) return p;
@@ -403,7 +477,7 @@ var Engine = (function () {
   };
   D.phaseShiftTo = function (p) {
     if (!this.quant || !this.an || !this.playing) return p;
-    var bl = this.beatLen(), g = this.an.grid0, cur = this.pos();
+    var bl = this.beatLen(), g = this.an.grid0, cur = this.posAt(this.nextT());
     var off = ((cur - g) / bl) % 1; if (off < 0) off += 1;
     var base = g + Math.round((p - g) / bl) * bl;
     if (off > 0.5) { off -= 1; }
@@ -472,21 +546,35 @@ var Engine = (function () {
   D.applyShift = function () {
     var f = Math.pow(2, this.keyShift / 12);
     if (this.keyLock) f /= this.tempoRate();
-    var need = Math.abs(f - 1) > 0.0004;
-    if (need && Math.abs(f - this.shifter.f) > 1e-5) this.shifter.set(f);
+    var need = Math.abs(f - 1) > 0.0004, t = ctx.currentTime, self = this;
+    if (need) {
+      clearTimeout(this.shKill);
+      if (!this.shifter) { this.shifter = new Shifter(); this.input.connect(this.shifter.in); this.shifter.out.connect(this.shG); t += 0.04; }
+      if (Math.abs(f - this.shifter.f) > 1e-5) this.shifter.set(f, this.startCtx > ctx.currentTime ? this.startCtx : 0);
+    }
     if (need !== this.shActive) {
-      // bypass the granular shifter when it is not needed (saves CPU, cleanest sound)
-      this.shActive = need; var t = ctx.currentTime;
+      // bypass the granular shifter when it is not needed (cleanest sound); it is torn down after the fade
+      this.shActive = need;
       this.byG.gain.setTargetAtTime(need ? 0 : 1, t, 0.008); this.shG.gain.setTargetAtTime(need ? 1 : 0, t, 0.008);
+      if (!need) { clearTimeout(this.shKill); this.shKill = setTimeout(function () { if (!self.shActive && self.shifter) { try { self.input.disconnect(self.shifter.in); } catch (e) {} self.shifter.destroy(); self.shifter = null; } }, 400); }
     }
   };
   /* beatgrid editing */
   D.gridShift = function (sec) { if (!this.an) return; this.an.grid0 += sec; var bar = this.beatLen() * 4; while (this.an.grid0 - bar > -0.001) this.an.grid0 -= bar; while (this.an.grid0 < -0.001) this.an.grid0 += bar; };
   D.setBpm = function (b) { if (!this.an || !(b > 30 && b < 300)) return; this.an.bpm = Math.round(b * 1000) / 1000; Engine.fxRetime(); if (this.isMaster) Engine.followMaster(); else if (this.sync) this.doSync(true); };
   D.gridHere = function () { if (!this.an) return; var p = this.pos(), bar = this.beatLen() * 4; this.an.grid0 = p - Math.floor(p / bar) * bar; };
+  /* tempo change: scheduled slightly ahead so the position model stays sample-exact */
   D.updateRate = function () {
-    this.anchor();
-    if (this.src) this.src.playbackRate.setValueAtTime(this.rate(), ctx.currentTime);
+    var r = this.rate();
+    if (this.src && this.playing && !this.special) {
+      var now = ctx.currentTime, t = now + LA();
+      if (Math.abs(r - this.r0) > 1e-9) {
+        var p = this.posAt(t);
+        this.prev = { p: this.startPos, t: this.startCtx, r: this.r0 };
+        this.startPos = p; this.startCtx = t; this.r0 = r;
+        this.src.playbackRate.setValueAtTime(r, t);
+      }
+    } else this.r0 = r;
     this.applyShift();
   };
   D.setPitch = function (p) { this.pitch = clamp(p, -this.range, this.range); this.updateRate(); if (this.isMaster) Engine.followMaster(); };
@@ -519,15 +607,23 @@ var Engine = (function () {
     this.updateRate();
     if (phase !== false && this.playing && m.playing) this.alignPhase(m);
   };
-  D.phase = function () { if (!this.an) return 0; var x = (this.pos() - this.an.grid0) / this.beatLen(); return x - Math.floor(x); };
-  D.beatInBar = function () { if (!this.an) return -1; var x = Math.floor((this.pos() - this.an.grid0) / this.beatLen() + 0.0001); return ((x % 4) + 4) % 4; };
-  D.phaseDelta = function (m) { var d = m.phase() - this.phase(); if (d > 0.5) d -= 1; if (d < -0.5) d += 1; return d; };
-  D.alignPhase = function (m) { var d = this.phaseDelta(m); if (Math.abs(d) > 0.004) this.seek(this.pos() + d * this.beatLen()); };
+  D.phase = function (t) { if (!this.an) return 0; var x = (this.apos(t) - this.an.grid0) / this.beatLen(); return x - Math.floor(x); };
+  D.beatInBar = function () { if (!this.an) return -1; var x = Math.floor((this.apos() - this.an.grid0) / this.beatLen() + 0.0001); return ((x % 4) + 4) % 4; };
+  D.barPhase = function (t) { if (!this.an) return 0; var x = (this.apos(t) - this.an.grid0) / (4 * this.beatLen()); return x - Math.floor(x); };
+  D.phaseDelta = function (m, t) { var d = m.phase(t) - this.phase(t); if (d > 0.5) d -= 1; if (d < -0.5) d += 1; return d; };
+  D.alignPhase = function (m) { var t = this.nextT(), d = this.phaseDelta(m, t); if (Math.abs(d) > 0.002) { this.startSrc(this.posAt(t) + d * this.beatLen(), t); } };
 
   /* mixer */
   D.setVal = function (k, v) {
     this.vals[k] = v; var t = ctx.currentTime;
     function eq(x) { return x <= -0.99 ? -40 : x < 0 ? x * 26 : x * 6; }
+    function iso(x) { return x <= -0.99 ? 0 : x < 0 ? Math.pow(1 + x, 2.2) : db(x * 6); }
+    if (this.eqMode === 'iso') {
+      var I = this.iso;
+      if (k === 'hi') I.gH.gain.setTargetAtTime(iso(v), t, 0.008);
+      if (k === 'mid') I.gM.gain.setTargetAtTime(iso(v), t, 0.008);
+      if (k === 'low') I.gL.gain.setTargetAtTime(iso(v), t, 0.008);
+    }
     if (k === 'trim') this.trim.gain.setTargetAtTime(db(v * 12), t, 0.01);
     if (k === 'hi') this.hiEq.gain.setTargetAtTime(eq(v), t, 0.01);
     if (k === 'mid') this.midEq.gain.setTargetAtTime(eq(v), t, 0.01);
@@ -536,7 +632,10 @@ var Engine = (function () {
   };
   D.setFader = function (v) { this.fader = v; this.fade.gain.setTargetAtTime(v * v, ctx.currentTime, 0.01); };
   D.applyXf = function () {
-    var x = (xfader + 1) / 2, gA = Math.min(1, Math.cos(x * Math.PI / 2) * 1.41), gB = Math.min(1, Math.sin(x * Math.PI / 2) * 1.41);
+    var x = (xfader + 1) / 2, gA, gB;
+    if (xfCurve === 'sharp') { gA = x > 0.96 ? (1 - x) / 0.04 : 1; gB = x < 0.04 ? x / 0.04 : 1; } // scratch / cut
+    else if (xfCurve === 'linear') { gA = Math.min(1, 2 * (1 - x)); gB = Math.min(1, 2 * x); } // dipless linear
+    else { gA = Math.min(1, Math.cos(x * Math.PI / 2) * 1.41); gB = Math.min(1, Math.sin(x * Math.PI / 2) * 1.41); } // smooth constant power
     var g = this.xfAssign === 'A' ? gA : this.xfAssign === 'B' ? gB : 1;
     this.xf.gain.setTargetAtTime(g, ctx.currentTime, 0.005);
   };
@@ -642,10 +741,10 @@ var Engine = (function () {
     var target = sp.p0 + (t - sp.t0) * sp.r;
     this.special = null;
     if (stopAfter) { this.playing = false; this.startPos = clamp(target, 0, this.duration() - 0.01); return; }
-    this.playing = true; this.startSrc(clamp(target, 0, this.duration() - 0.01));
+    this.playing = true; this.startSrc(clamp(target + LA() * sp.r, 0, this.duration() - 0.01));
   };
 
-  var FXS = { ch: 0, type: 'echo', level: 0.5, params: {}, on: false, tap: 0 };
+  var FXS = { ch: 0, type: 'echo', level: 0.5, params: {}, xs: {}, bands: [1, 1, 1], on: false, tap: 0 };
   for (var i = 0; i < 4; i++) decks.push(new Deck(i));
   var masterFx = new FxUnit({
     bpm: function () { var m = Engine.masterDeck(); return FXS.tap || (m ? m.bpmNow() : 120); },
@@ -657,7 +756,8 @@ var Engine = (function () {
   master.connect(masterFx.input); masterFx.output.connect(limiter);
   function fxUnit(ch) { return ch === 4 ? masterFx : decks[ch].fxu; }
   function fxParam(t) { return FXS.params[t] != null ? FXS.params[t] : FX[t].d; }
-  function fxConfigure(u) { u.setType(FXS.type); u.setParam(fxParam(FXS.type)); u.setLevel(FXS.level); }
+  function fxX(t) { return FXS.xs[t] != null ? FXS.xs[t] : (FX[t].xd != null ? FX[t].xd : 0.5); }
+  function fxConfigure(u) { u.setType(FXS.type); u.setParam(fxParam(FXS.type)); u.x = fxX(FXS.type); u.setLevel(FXS.level); u.setBands(FXS.bands); }
 
   /* ---------- camelot helpers ---------- */
   function shiftCamelot(c, semis) {
@@ -684,11 +784,18 @@ var Engine = (function () {
       if (o.paramStep) { var P = FX[FXS.type].p, i = P.indexOf(fxParam(FXS.type)); if (i < 0) i = P.indexOf(FX[FXS.type].d); i = clamp(i + o.paramStep, 0, P.length - 1); FXS.params[FXS.type] = P[i]; u.setParam(P[i]); }
       if (o.param != null) { FXS.params[FXS.type] = o.param; u.setParam(o.param); }
       if (o.level != null) { FXS.level = clamp(o.level, 0, 1); u.setLevel(FXS.level); }
+      if (o.x != null) { FXS.xs[FXS.type] = clamp(o.x, 0, 1); u.setX(FXS.xs[FXS.type]); }
+      if (o.bands) { FXS.bands = o.bands.slice(0, 3); u.setBands(FXS.bands); }
       if (o.tap !== undefined) { FXS.tap = o.tap; u.retime(); }
       if (o.on != null) FXS.on = u.setOn(o.on);
       return FXS;
     },
     fxParamValue: function () { return fxParam(FXS.type); },
+    fxX: function () { return fxX(FXS.type); },
+    LA: LA, latency: function () { return { base: ctx.baseLatency || 0, out: ctx.outputLatency || 0, hint: latH, sr: SR }; },
+    setEqMode: function (m) { decks.forEach(function (d) { d.setEqMode(m); }); },
+    setXfCurve: function (c) { xfCurve = c; decks.forEach(function (d) { d.applyXf(); }); },
+    setLimiter: setLimiter,
     fxMs: function () { var u = fxUnit(FXS.ch); if (FX[FXS.type].u !== 'b') return null; return Math.round(fxParam(FXS.type) * 60000 / u.bpm()); },
     fxBpm: function () { return fxUnit(FXS.ch).bpm(); },
     fxBeatPos: function () { return fxUnit(FXS.ch).o.beatPos(); },
@@ -731,12 +838,13 @@ var Engine = (function () {
       var m = Engine.masterDeck();
       decks.forEach(function (d) {
         var want = 0;
-        if (m && m.playing && d.sync && d !== m && d.playing && d.an && !d.special && !d.slip) {
+        if (m && m.playing && d.sync && d !== m && d.playing && d.an && !d.special && !d.slip && ctx.currentTime >= d.startCtx && ctx.currentTime >= m.startCtx) {
           var pd = d.phaseDelta(m);
-          if (Math.abs(pd) > 0.15) d.alignPhase(m);
-          else if (Math.abs(pd) > 0.003) want = clamp(pd * 0.25, -0.01, 0.01);
+          // audible phase (Master Tempo latency compensated); big errors jump, small ones are pulled in smoothly
+          if (Math.abs(pd) > 0.12) d.alignPhase(m);
+          else if (Math.abs(pd) > 0.0012) want = clamp(pd * d.beatLen() / 1.2, -0.006, 0.006);
         }
-        if (Math.abs(want - d.corr) > 0.0005 || (want === 0 && d.corr !== 0)) { d.corr = want; d.updateRate(); }
+        if (Math.abs(want - d.corr) > 0.0002 || (want === 0 && d.corr !== 0)) { d.corr = want; d.updateRate(); }
       });
       // tempo-synced FX follow the current BPM
       var mb = masterFx.bpm(); if (Math.abs(mb - (masterFx._b || 0)) > 0.05) { masterFx._b = mb; masterFx.retime(); }
@@ -775,6 +883,6 @@ var Engine = (function () {
     },
     stopRec: function () { if (Engine.rec) { Engine.rec.stop(); Engine.rec = null; } }
   };
-  setInterval(Engine.tickSync, 250);
+  setInterval(Engine.tickSync, 200);
   return Engine;
 })();
