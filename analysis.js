@@ -205,6 +205,60 @@ var Analysis = (function () {
       .then(function (x) { var k = key(R); R = null; return { wf: x.wf, bpm: x.t.bpm, grid0: x.t.grid0, key: k.key, camelot: k.camelot, loud: x.wf.loud }; });
   }
 
+
+  /* ---- precise grid: onset envelope from the full-rate audio ---- */
+  // returns {e: Float32Array (positive envelope rise, 1 value per ms), t0}
+  function onsetEnv(buf, from, to) {
+    var sr = buf.sampleRate, L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
+    var a = Math.max(0, Math.floor(from * sr)), b = Math.min(L.length, Math.ceil(to * sr)), hop = Math.max(1, Math.round(sr / 1000));
+    var n = Math.floor((b - a) / hop), out = new Float32Array(n);
+    var alp = 1 - Math.exp(-2 * Math.PI * 170 / sr), ahp = 1 - Math.exp(-2 * Math.PI * 4000 / sr), rel = Math.exp(-1 / (sr * 0.012));
+    var lp = 0, hpl = 0, envL = 0, envH = 0, prevL = 0, prevH = 0, i = a;
+    for (var k = 0; k < n; k++) {
+      var mL = 0, mH = 0;
+      for (var j = 0; j < hop; j++, i++) {
+        var m = (L[i] + R[i]) * 0.5; lp += alp * (m - lp); hpl += ahp * (m - hpl); var h = m - hpl;
+        var al = lp < 0 ? -lp : lp, ah = h < 0 ? -h : h;
+        envL = al > envL ? al : envL * rel; envH = ah > envH ? ah : envH * rel;
+        if (envL > mL) mL = envL; if (envH > mH) mH = envH;
+      }
+      var d = Math.max(0, mL - prevL) + 0.35 * Math.max(0, mH - prevH); prevL = mL; prevH = mH;
+      out[k] = d;
+    }
+    return { e: out, t0: a / sr, rate: sr / hop };
+  }
+  function gridScore(env, g0, bl, from, to) {
+    var e = env.e, s = 0, n = 0, k0 = Math.ceil((from - g0) / bl);
+    for (var t = g0 + k0 * bl; t < to; t += bl) {
+      var x = (t - env.t0) * env.rate, i = Math.floor(x); if (i < 1 || i >= e.length - 2) continue;
+      var f = x - i, v = e[i] * (1 - f) + e[i + 1] * f; // tolerate +-1 ms
+      v = Math.max(v, e[i - 1] * 0.7, e[i + 2] * 0.7); s += v; n++;
+    }
+    return n ? s / n : 0;
+  }
+  /* refine bpm (+-0.04) and phase (+-30 ms, 0.5 ms steps) on the whole track */
+  function refineGrid(buf, an) {
+    var dur = buf.duration, env = onsetEnv(buf, 0, dur), from = Math.min(dur * 0.05, 20), to = dur - Math.min(dur * 0.05, 10);
+    var best = { s: -1, bpm: an.bpm, g: an.grid0 };
+    function evalAt(bpm) {
+      var bl = 60 / bpm, mid = (from + to) / 2, k = Math.round((mid - an.grid0) / (60 / an.bpm)), anchor = an.grid0 + k * (60 / an.bpm);
+      for (var off = -0.03; off <= 0.0301; off += 0.0005) {
+        var a2 = anchor + off, g0 = a2 - Math.floor((a2) / bl) * bl, sc = gridScore(env, g0, bl, from, to);
+        if (sc > best.s) best = { s: sc, bpm: bpm, g: g0 };
+      }
+    }
+    for (var db = -0.04; db <= 0.0401; db += 0.005) evalAt(Math.round((an.bpm + db) * 1000) / 1000);
+    var ib = Math.round(best.bpm);
+    if (Math.abs(ib - best.bpm) <= 0.04 && ib !== best.bpm) { var keep = best; best = { s: -1 }; evalAt(ib); if (best.s < keep.s * 0.985) best = keep; }
+    var bl = 60 / best.bpm, g = best.g; while (g - bl > -0.0005) g -= bl; if (g < 0) g += bl;
+    return { bpm: Math.round(best.bpm * 1000) / 1000, grid0: g, env: env };
+  }
+  /* local auto-align around time t: best phase shift within +-maxMs */
+  function alignLocal(buf, bpm, grid0, t, beats, maxMs) {
+    var bl = 60 / bpm, from = Math.max(0, t - beats * bl / 2), to = Math.min(buf.duration, t + beats * bl / 2), env = onsetEnv(buf, from, to), best = 0, bs = -1;
+    for (var off = -maxMs / 1000; off <= maxMs / 1000 + 1e-9; off += 0.0005) { var sc = gridScore(env, grid0 + off, bl, from, to); if (sc > bs) { bs = sc; best = off; } }
+    return best;
+  }
   function compatible(c1, c2) {
     if (!c1 || !c2) return false;
     var n1 = parseInt(c1, 10), n2 = parseInt(c2, 10), l1 = c1.slice(-1), l2 = c2.slice(-1);
@@ -212,5 +266,5 @@ var Analysis = (function () {
     if (l1 === l2 && ((n1 % 12) + 1 === n2 || (n2 % 12) + 1 === n1)) return true;
     return false;
   }
-  return { analyze: analyze, compatible: compatible };
+  return { analyze: analyze, compatible: compatible, refineGrid: refineGrid, alignLocal: alignLocal, onsetEnv: onsetEnv };
 })();

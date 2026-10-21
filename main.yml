@@ -1,0 +1,63 @@
+name: DJ Studio APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Mappaszerkezet helyreállítása
+        run: |
+          set -e
+          if [ -f app/build.gradle ]; then echo "Rendes mappaszerkezet."; echo "PROJ=." >> "$GITHUB_ENV"; exit 0; fi
+          F=$(find . -path ./.git -prune -o -name settings.gradle -print | head -1)
+          if [ -n "$F" ] && [ -f "$(dirname "$F")/app/build.gradle" ]; then echo "PROJ=$(dirname "$F")" >> "$GITHUB_ENV"; exit 0; fi
+          echo "Lapos feltöltés – mappaszerkezet helyreállítása…"
+          P=proj; M=$P/app/src/main
+          mkdir -p $M/java/hu/djstudio/app $M/res/values $M/res/values-v28 $M/assets/www/js
+          for g in *.gradle; do
+            if grep -q "namespace" "$g"; then cp "$g" $P/app/build.gradle
+            elif grep -q "include" "$g"; then cp "$g" $P/settings.gradle
+            else cp "$g" $P/build.gradle; fi
+          done
+          cp gradle.properties $P/ 2>/dev/null || true
+          for k in *.keystore; do [ -f "$k" ] && cp "$k" $P/app/djstudio.keystore; done
+          cp AndroidManifest.xml $M/
+          cp MainActivity.java MidiBridge.java $M/java/hu/djstudio/app/
+          for s in styles*.xml; do
+            if grep -q "windowLayoutInDisplayCutoutMode" "$s"; then cp "$s" $M/res/values-v28/styles.xml; else cp "$s" $M/res/values/styles.xml; fi
+          done
+          i=0; for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do mkdir -p $M/res/mipmap-$d; done
+          ls -1rS ic_launcher*.png | while IFS= read -r f; do
+            d=$(echo "mdpi hdpi xhdpi xxhdpi xxxhdpi" | cut -d' ' -f$((i+1))); cp "$f" "$M/res/mipmap-$d/ic_launcher.png"; i=$((i+1));
+          done
+          cp index.html style.css $M/assets/www/
+          for j in sc analysis engine wave ui midi; do cp "$j.js" $M/assets/www/js/; done
+          echo "PROJ=$P" >> "$GITHUB_ENV"
+          find $P -type f | sort
+
+      - name: APK fordítása
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > "$PROJ/local.properties"
+          cd "$PROJ" && gradle assembleRelease --no-daemon --stacktrace
+
+      - name: APK átnevezése
+        run: cp "$PROJ"/app/build/outputs/apk/release/app-release.apk DJStudio-2.0.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DJStudio-2.0-APK
+          path: DJStudio-2.0.apk

@@ -3,8 +3,27 @@ var SC = (function () {
   var API = 'https://api-v2.soundcloud.com';
   var CID = store('cid');
 
-  function getText(u) { return fetch(u).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); }); }
-  function getJSON(u) { return fetch(u).then(function (r) { if (!r.ok) { var e = new Error('HTTP ' + r.status); e.status = r.status; throw e; } return r.json(); }); }
+  /* network transport: XMLHttpRequest (works from file:// on webOS and through the Android native proxy) */
+  var LOG = [];
+  function log(m) { LOG.push(new Date().toTimeString().slice(0, 8) + ' ' + m); if (LOG.length > 60) LOG.shift(); }
+  function req(u, type) {
+    return new Promise(function (res, rej) {
+      var x = new XMLHttpRequest();
+      x.open('GET', u, true); x.timeout = 25000;
+      if (type) x.responseType = type;
+      x.onload = function () {
+        if (x.status >= 200 && x.status < 300) {
+          var fin = null; try { fin = x.getResponseHeader('X-Final-URL'); } catch (e) {}
+          res({ data: type ? x.response : x.responseText, url: fin || x.responseURL || u, status: x.status });
+        } else { var e = new Error('HTTP ' + x.status); e.status = x.status; log('HIBA ' + x.status + ' ' + u.split('?')[0]); rej(e); }
+      };
+      x.onerror = function () { var e = new Error('Hálózati hiba (nem érhető el: ' + u.replace(/^https?:\/\//, '').split(/[/?]/)[0] + ')'); e.status = 0; log('HÁLÓZATI HIBA ' + u.split('?')[0]); rej(e); };
+      x.ontimeout = function () { var e = new Error('Időtúllépés'); e.status = 0; log('IDŐTÚLLÉPÉS ' + u.split('?')[0]); rej(e); };
+      x.send();
+    });
+  }
+  function getText(u) { return req(u).then(function (r) { return r.data; }); }
+  function getJSON(u) { return req(u).then(function (r) { try { return JSON.parse(r.data); } catch (e) { throw new Error('Érvénytelen válasz a SoundCloudtól'); } }); }
 
   function findId(pages) {
     var i = 0;
@@ -33,7 +52,7 @@ var SC = (function () {
       ['https://soundcloud.com/', 'https://soundcloud.com'],
       ['https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/', 'https://w.soundcloud.com'],
       ['https://m.soundcloud.com/', 'https://m.soundcloud.com']
-    ]).then(function (id) { CID = id; store('cid', id); return id; });
+    ]).then(function (id) { CID = id; store('cid', id); log('client_id OK'); return id; }, function (e) { log('client_id HIBA: ' + e.message); throw e; });
   }
   function withCid(u) { return u + (u.indexOf('?') < 0 ? '?' : '&') + 'client_id=' + CID; }
   function api(path, retried) {
@@ -76,14 +95,15 @@ var SC = (function () {
     url = url.split('?')[0];
     return api('/resolve?url=' + encodeURIComponent(url)).then(toUser).catch(function (e) {
       if (url.indexOf('on.soundcloud.com') < 0) throw new Error('Nem található ilyen profil');
-      return fetch(url).then(function (r) {
+      return req(url).then(function (r) {
         if (r.url && r.url.indexOf('on.soundcloud.com') < 0) return r.url;
-        return r.text().then(function (h) { var m = h.match(/https:\/\/soundcloud\.com\/[\w-]+(\/[\w-]+)?/); if (!m) throw e; return m[0]; });
+        var h = r.data || '', m = h.match(/<link[^>]+rel="canonical"[^>]+href="(https:\/\/soundcloud\.com\/[^"]+)"/) || h.match(/property="og:url"[^>]+content="(https:\/\/soundcloud\.com\/[^"]+)"/) || h.match(/(https:\/\/soundcloud\.com\/(?!discover|search|upload|you|pages|terms)[\w-]+)/);
+        if (!m) throw e; return m[1];
       }).then(function (full) { return api('/resolve?url=' + encodeURIComponent(full.split('?')[0])).then(toUser); });
     });
   }
 
-  function fetchBuf(u) { return fetch(u).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }); }
+  function fetchBuf(u) { return req(u, 'arraybuffer').then(function (r) { return r.data; }); }
   function concat(bufs) {
     var n = 0, i; for (i = 0; i < bufs.length; i++) n += bufs[i].byteLength;
     var out = new Uint8Array(n), o = 0;
@@ -167,5 +187,23 @@ var SC = (function () {
     });
   }
 
-  return { page: page, lister: lister, likeTrack: likeTrack, clearCache: function () { pcache = {}; }, ensureCid: ensureCid, search: search, likes: likes, userTracks: userTracks, resolveProfile: resolveProfile, download: download, api: api };
+  /* step-by-step connection test for the settings screen */
+  function diagnose(report) {
+    var steps = [];
+    function step(name, fn) { return function () { report(name, 'fut'); return fn().then(function (msg) { report(name, 'ok', msg); }, function (e) { report(name, 'hiba', e.message || String(e)); throw e; }); }; }
+    return Promise.resolve()
+      .then(step('Internet / SoundCloud oldal', function () { return getText('https://soundcloud.com/').then(function (h) { return (h.length / 1024).toFixed(0) + ' kB'; }); }))
+      .then(step('Kliens azonosító', function () { CID = null; store('cid', null); return ensureCid(true).then(function (id) { return id.slice(0, 6) + '…'; }); }))
+      .then(step('Keresés (API)', function () { return api('/search/tracks?q=house&limit=5').then(function (d) { steps.t = (d.collection || [])[0]; return (d.collection || []).length + ' találat'; }); }))
+      .then(step('Profil', function () { var u = store('user'); return u ? api('/users/' + u.id).then(function (x) { return x.username; }) : Promise.resolve('nincs beállítva'); }))
+      .then(step('Zene letöltés (stream)', function () {
+        if (!steps.t) return Promise.reject(new Error('nincs szám a teszthez'));
+        var got = false;
+        return new Promise(function (res, rej) {
+          download(steps.t, function (f) { if (!got && f > 0) { got = true; res('stream elérhető'); } }, function () { if (!got) { got = true; res('stream elérhető'); } }).then(function () { if (!got) res('stream elérhető'); }, rej);
+        });
+      }))
+      .catch(function () {});
+  }
+  return { log: function () { return LOG.slice(); }, diagnose: diagnose, page: page, lister: lister, likeTrack: likeTrack, clearCache: function () { pcache = {}; }, ensureCid: ensureCid, search: search, likes: likes, userTracks: userTracks, resolveProfile: resolveProfile, download: download, api: api };
 })();

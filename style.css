@@ -124,3 +124,27 @@ button{touch-action:manipulation}
 #settings,#help{overflow-y:auto;touch-action:pan-y}
 .hcols{display:flex}.hcols>div{flex:1;padding-right:20px}.hcols p{font-size:13px;margin:6px 0;line-height:1.35}
 #toast{position:absolute;top:44px;left:50%;transform:translateX(-50%);background:#2c2f36;color:#fff;font-size:14px;padding:8px 16px;border-radius:9px;display:none;z-index:30;border:1px solid #555;max-width:80%;text-align:center}
+
+.fxpane .row{margin-bottom:4px}
+.b.fxon{flex:.9;background:#3a2a1a;color:#ffb066;font-weight:bold}
+.b.fxon.on{background:#ff8a00;color:#000}
+.b.fxon.on.blink{background:#ffcf80}
+.b.fxbeat{flex:1.8;font-weight:bold;color:#fff}
+.b.fxauto{flex:1.1;font-size:11px}
+.fxch .b{font-size:11px;padding:0}
+.fxch .b.on{background:#ff8a00;color:#000}
+.fxlv{font-size:11px;color:#ccc;width:34px;text-align:right;align-self:center}
+.fxgh{grid-column:1/-1;font-size:12px;color:#ff8a00;letter-spacing:1px;margin:4px 0 0}
+
+#gCanvas{width:100%;flex:1;min-height:120px;background:#000;border-radius:8px;display:block;touch-action:none;cursor:ew-resize}
+.ghint{font-size:10px;color:#888;margin:3px 0 2px}.ghint b{color:#ccc}
+.ginfo{display:flex;flex-direction:column;align-items:flex-end;margin-right:14px}.ginfo span{font-size:9px;color:#888;letter-spacing:1px}.ginfo b{font-size:15px;color:#fff;font-family:monospace}
+#gridPanel .grow{margin:3px 0}
+#gridPanel .grow span{width:80px}
+#gridPanel .sb{height:30px;padding:0 9px;font-size:12px}
+#gridPanel .sb.on{background:#ff8a00;color:#000}
+.gnum{max-width:90px;height:30px;font-size:13px;margin-left:6px}
+
+#scDiagOut{margin:4px 0 8px 150px;font-size:13px}
+.dg{padding:3px 0}.dg.ok{color:#3e3}.dg.hiba{color:#f66}.dg.fut{color:#fc0}
+.dglog{white-space:pre-wrap;font-family:monospace;font-size:10px;color:#888;margin-top:6px}

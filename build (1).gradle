@@ -10,15 +10,24 @@ android {
         applicationId 'hu.djstudio.app'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '2.0'
+        versionCode 3
+        versionName '2.1'
+    }
+
+    signingConfigs {
+        // fixed key in the project, so every new build installs over the previous one
+        djstudio {
+            storeFile file('djstudio.keystore')
+            storePassword 'djstudio2'
+            keyAlias 'djstudio'
+            keyPassword 'djstudio2'
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            // signed with the auto-generated debug key so the APK can be installed directly
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.djstudio
         }
     }
 

@@ -51,11 +51,16 @@
 
   <div id="fxPick" class="sheet"><div class="shead"><h2 id="fxPickT">Beat FX</h2><div class="sp"></div><button class="sb close" data-close="fxPick">✕</button></div><div id="fxGrid"></div></div>
 
-  <div id="gridPanel" class="sheet"><div class="shead"><h2 id="gridT">Beatgrid</h2><div class="sp"></div><button class="sb close" data-close="gridPanel">✕</button></div>
-    <p id="gridInfo"></p>
-    <div class="grow"><span>Rács eltolása</span><button class="sb" data-g="l20">◀◀ 20 ms</button><button class="sb" data-g="l5">◀ 5 ms</button><button class="sb" data-g="r5">5 ms ▶</button><button class="sb" data-g="r20">20 ms ▶▶</button></div>
-    <div class="grow"><span>1. ütem</span><button class="sb" data-g="lb">◀ 1 ütés</button><button class="sb" data-g="rb">1 ütés ▶</button><button class="sb" data-g="here">1. ütem = most</button></div>
-    <div class="grow"><span>BPM</span><button class="sb" data-g="half">÷2</button><button class="sb" data-g="dbl">×2</button><button class="sb" data-g="m01">−0.01</button><button class="sb" data-g="p01">+0.01</button><button class="sb" data-g="tap">TAP</button><button class="sb" data-g="reset">Eredeti</button></div>
+  <div id="gridPanel" class="sheet">
+    <div class="shead"><h2 id="gridT">BEATGRID</h2><div class="sp"></div>
+      <div class="ginfo"><span>BPM</span><b id="gBpm">–</b></div><div class="ginfo"><span>1. ÜTEM</span><b id="gOff">–</b></div><div class="ginfo"><span>FÓKUSZ</span><b id="gPos">–</b></div>
+      <button class="sb close" data-close="gridPanel">✕</button></div>
+    <canvas id="gCanvas"></canvas>
+    <div class="ghint">Húzd a hullámformát: a <b>rács</b> mozdul (finom igazítás). Cián ▲ = dobütés. Piros vonal = ütem eleje.</div>
+    <div class="grow"><button class="sb" data-g="start">⏮ Eleje</button><button class="sb" data-g="back">◀ 4 ütem</button><button class="sb" data-g="fwd">4 ütem ▶</button><button class="sb" data-g="here">⦿ Lejátszófej</button><button class="sb" data-g="follow">Követés</button><button class="sb" data-g="zout">－</button><button class="sb" data-g="zin">＋</button><button class="sb pri" data-g="play">▶ / ❚❚</button><button class="sb" data-g="metro">♩ Metronóm</button></div>
+    <div class="grow"><span>Rács eltolás</span><button class="sb" data-g="l10">◀◀ 10 ms</button><button class="sb" data-g="l1">◀ 1 ms</button><button class="sb" data-g="r1">1 ms ▶</button><button class="sb" data-g="r10">10 ms ▶▶</button><button class="sb" data-g="lh">◀ ½ ütés</button><button class="sb" data-g="rh">½ ütés ▶</button><button class="sb" data-g="lb">◀ 1 ütés</button><button class="sb" data-g="rb">1 ütés ▶</button></div>
+    <div class="grow"><span>BPM</span><button class="sb" data-g="half">÷2</button><button class="sb" data-g="dbl">×2</button><button class="sb" data-g="m1">−0.1</button><button class="sb" data-g="m01">−0.01</button><button class="sb" data-g="m001">−0.001</button><button class="sb" data-g="p001">+0.001</button><button class="sb" data-g="p01">+0.01</button><button class="sb" data-g="p1">+0.1</button><input id="gBpmIn" class="txt gnum" type="number" step="0.001" inputmode="decimal" placeholder="BPM"><button class="sb" data-g="setbpm">OK</button><button class="sb" data-g="tap">TAP</button></div>
+    <div class="grow"><span>Eszközök</span><button class="sb pri" data-g="auto">✦ AUTO igazítás itt</button><button class="sb" data-g="downbeat">1. ütem = fókusz</button><button class="sb" data-g="reanalyze">⟳ Teljes pontosítás</button><button class="sb" data-g="undo">↶ Vissza</button><button class="sb" data-g="reset">Eredeti</button></div>
   </div>
 
   <div id="settings" class="sheet"><div class="shead"><h2>⚙ Beállítások</h2><div class="sp"></div><button class="sb close" data-close="settings">✕</button></div>
@@ -66,6 +71,8 @@
     <div class="srow"><span>Jog wheel</span><div data-set="jog"><button class="sb" data-v="nudge">Nudge (tempó)</button><button class="sb" data-v="seek">Tekerés</button></div></div>
     <div class="srow"><span>Rezgés gombnyomáskor</span><div data-set="vib"><button class="sb" data-v="1">Be</button><button class="sb" data-v="0">Ki</button></div></div>
     <div class="srow"><span>Hullámforma nagyítás</span><div><button class="sb" data-c="zoomOut">－</button><button class="sb" data-c="zoomIn">＋</button></div></div>
+    <div class="srow"><span>SoundCloud kapcsolat</span><div><button class="sb pri" id="scDiag">Kapcsolat tesztelése</button></div></div>
+    <div id="scDiagOut"></div>
     <div class="srow"><span>MIDI (DDJ-1000)</span><div><button class="sb" data-c="learn">MIDI tanítás</button><button class="sb" id="midiReset">Alaphelyzet</button></div></div>
   </div>
 

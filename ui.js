@@ -60,11 +60,6 @@ var UI = (function () {
     reg(p + 'pitch', { type: 'sld', min: -1, max: 1, def: 0, get: function () { return D.pitch / D.range; }, set: function (v) { if (D.sync && !D.isMaster) { toast('SYNC bekapcsolva – a tempót a MASTER adja'); return; } D.setPitch(v * D.range); } });
     ['trim', 'hi', 'mid', 'low', 'filter'].forEach(function (k) { knob(p + k, -1, 1, 0, function () { return D.vals[k]; }, function (v) { D.setVal(k, v); }); });
     reg(p + 'fader', { type: 'vsld', min: 0, max: 1, def: 1, get: function () { return D.fader; }, set: function (v) { D.setFader(v); } });
-    btn(p + 'fxType', function () { openFxPick(d); });
-    btn(p + 'fxOn', function () { E.resume(); D.setFx({ on: !D.fxOn }); }, function () { return D.fxOn || (E.FX_ACTION[D.fxType] && !!D.special) || !!(D.slip && D.fxType === 'roll'); });
-    reg(p + 'fxLevel', { type: 'sld', min: 0, max: 1, def: 0.5, get: function () { return D.fxLevel; }, set: function (v) { D.setFx({ level: v }); } });
-    btn(p + 'fxBeatDown', function () { D.setFx({ beat: BEATS[Math.max(0, BEATS.indexOf(D.fxBeat) - 1)] }); });
-    btn(p + 'fxBeatUp', function () { D.setFx({ beat: BEATS[Math.min(BEATS.length - 1, BEATS.indexOf(D.fxBeat) + 1)] }); });
     btn(p + 'xf', function () { D.xfAssign = D.xfAssign === 'A' ? 'THRU' : D.xfAssign === 'THRU' ? 'B' : 'A'; D.applyXf(); });
     btn(p + 'load', function () { selectDeck(d); openSheet('lib'); });
     btn(p + 'empty', function () { selectDeck(d); openSheet('lib'); });
@@ -76,6 +71,21 @@ var UI = (function () {
       else D.seek(D.pos() + v * 0.012);
     } });
   });
+  /* ---- Pioneer-style BEAT FX unit (global, channel select A–D / MASTER) ---- */
+  var FXS = E.fxState, taps = [];
+  btn('fx.type', function () { openFxPick(); });
+  btn('fx.on', function () { E.resume(); E.fx({ on: !FXS.on }); }, function () { return FXS.on; });
+  btn('fx.prev', function () { E.fx({ paramStep: -1 }); });
+  btn('fx.next', function () { E.fx({ paramStep: 1 }); });
+  btn('fx.tap', function () {
+    var now = performance.now(); if (taps.length && now - taps[taps.length - 1] > 2000) taps = [];
+    taps.push(now); if (taps.length > 8) taps.shift();
+    if (taps.length >= 3) { var bpm = 60000 / ((taps[taps.length - 1] - taps[0]) / (taps.length - 1)); E.fx({ tap: Math.round(bpm * 10) / 10 }); }
+  }, function () { return !!FXS.tap; });
+  btn('fx.auto', function () { taps = []; E.fx({ tap: 0 }); }, function () { return !FXS.tap; });
+  [0, 1, 2, 3, 4].forEach(function (c) { btn('fx.ch' + c, function () { E.fx({ ch: c }); }, function () { return FXS.ch === c; }); });
+  reg('fx.level', { type: 'sld', min: 0, max: 1, def: 0.5, get: function () { return FXS.level; }, set: function (v) { E.fx({ level: v }); } });
+  E.fx({});
   reg('xfader', { type: 'sld', min: -1, max: 1, def: 0, get: function () { return E.getXfader(); }, set: function (v) { E.setXfader(v); } });
   var mvol = store('mvol_m'); if (mvol == null) mvol = 0.8; E.setMasterVol(mvol);
   knob('masterVol', 0, 1, 0.8, function () { return mvol; }, function (v) { mvol = v; E.setMasterVol(v); store('mvol_m', v); });
@@ -112,9 +122,10 @@ var UI = (function () {
       '<div class="pane" data-pane="loop"><div class="row">' + b('loopHalf', '½', 'sm') + b('loop', 'LOOP 4', 'lp') + b('loopDouble', '2×', 'sm') + b('loopIn', 'IN') + b('loopOut', 'OUT') + '</div>' +
       '<div class="row">' + b('jumpB', '◀◀') + b('jumpSize', '4 ütem') + b('jumpF', '▶▶') + b('reloop', 'EXIT') + '</div>' +
       '<div class="row">' + b('bendDown', '◁ lassít') + b('bendUp', 'gyorsít ▷') + '</div></div>' +
-      '<div class="pane" data-pane="fx"><div class="row">' + b('fxType', 'ECHO ▾', 'fxn') + b('fxOn', 'FX ON', 'lp') + '</div>' +
-      '<div class="row">' + b('fxBeatDown', '−', 'sm') + '<button class="b" data-c="' + p + 'fxBeatUp">3/4</button>' + b('fxBeatUp', '+', 'sm') + '</div>' +
-      '<div class="row"><span class="lbl">SZINT</span><div class="sld" data-c="' + p + 'fxLevel"><div class="tr"></div><div class="th"></div></div></div></div>' +
+      '<div class="pane fxpane" data-pane="fx"><div class="row"><button class="b fxn" data-c="fx.type">ECHO ▾</button><button class="b fxon" data-c="fx.on">ON</button></div>' +
+      '<div class="row"><button class="b sm" data-c="fx.prev">◀</button><button class="b fxbeat" data-c="fx.type" data-fxbeat="1">1/2</button><button class="b sm" data-c="fx.next">▶</button><button class="b" data-c="fx.tap">TAP</button><button class="b fxauto" data-c="fx.auto">AUTO</button></div>' +
+      '<div class="row fxch"><span class="lbl">CH</span>' + ['A', 'B', 'C', 'D', 'M'].map(function (l, c) { return '<button class="b" data-c="fx.ch' + c + '">' + (c === 4 ? 'MST' : l) + '</button>'; }).join('') + '</div>' +
+      '<div class="row"><span class="lbl">LEVEL</span><div class="sld" data-c="fx.level"><div class="tr"></div><div class="th"></div></div><span class="fxlv">50%</span></div></div>' +
       '<div class="pane" data-pane="tempo"><div class="row"><span class="lbl">TEMPO</span><div class="sld" data-c="' + p + 'pitch"><div class="tr"></div><div class="ctr"></div><div class="th"></div></div></div>' +
       '<div class="row">' + b('range', '±8%') + b('pitch0', '0%') + b('mt', 'MT', 'lp') + b('keySync', 'K-SYNC') + '</div>' +
       '<div class="row">' + b('keyDown', '♭ −') + b('key0', 'KEY 0') + b('keyUp', '♯ +') + '</div></div>' +
@@ -135,7 +146,7 @@ var UI = (function () {
     var st = document.createElement('div'); st.className = 'strip'; st.innerHTML = stripHTML(d); $('#strips').appendChild(st); stripEl.push(st);
     R.push({ bpm: $('.bpm', el), pct: $('.pct', el), key: $('.key', el), tm: $('.tm', el), tt: $('.tt', el), ta: $('.ta', el), prog: $('.prog', el), progIn: $('.prog div', el), ov: $('.ov', el), jog: $('.jog', el), mt: $('.mt div', st), ovImg: null, ovSig: '', jogSig: '' });
     el.addEventListener('pointerdown', function () { selectDeck(d); }, true);
-    $$('.tab', el).forEach(function (t) { t.addEventListener('click', function () { tabSel[d] = t.getAttribute('data-tab'); $$('.tab', el).forEach(function (x) { x.classList.toggle('on', x === t); }); $$('.pane', el).forEach(function (pn) { pn.classList.toggle('on', pn.getAttribute('data-pane') === tabSel[d]); }); buzz(); setTimeout(function () { ctrlEls.forEach(function (o) { o.el._v = undefined; }); }, 0); }); });
+    $$('.tab', el).forEach(function (t) { t.addEventListener('pointerdown', function () { tabSel[d] = t.getAttribute('data-tab'); if (tabSel[d] === 'fx' && !FXS.on && FXS.ch !== 4) E.fx({ ch: d }); $$('.tab', el).forEach(function (x) { x.classList.toggle('on', x === t); }); $$('.pane', el).forEach(function (pn) { pn.classList.toggle('on', pn.getAttribute('data-pane') === tabSel[d]); }); buzz(); setTimeout(function () { ctrlEls.forEach(function (o) { o.el._v = undefined; }); }, 0); }); });
     R[d].ov.addEventListener('pointerdown', function (e) { if (!D.buf) return; var r = this.getBoundingClientRect(); D.seek((e.clientX - r.left) / r.width * D.duration()); });
   });
   function swapSide(d) {
@@ -319,6 +330,7 @@ var UI = (function () {
       if (loading[d]) r.progIn.style.width = Math.round(prog[d] * 100) + '%';
       var lv = Math.min(100, Math.round(D.level() * 100)); if (r.mt._l !== lv) { r.mt._l = lv; r.mt.style.height = lv + '%'; r.mt.style.background = lv > 95 ? '#f33' : lv > 70 ? '#ee2' : '#2c2'; }
     });
+    var lvT = Math.round(FXS.level * 100) + '%'; $$('.fxlv').forEach(function (e) { setText(e, lvT); });
     var ml = Math.min(100, Math.round(E.masterLevel() * 100)), mm = $('#mMeter div'); if (mm._l !== ml) { mm._l = ml; mm.style.height = ml + '%'; mm.style.background = ml > 95 ? '#f33' : ml > 70 ? '#ee2' : '#2c2'; }
     ctrlEls.forEach(function (o) {
       var c = o.c, el = o.el; if (!c) return;
@@ -330,13 +342,15 @@ var UI = (function () {
         if (D) {
           if (k === 'loop') txt = 'LOOP ' + (D.loopBeats < 1 ? '1/' + Math.round(1 / D.loopBeats) : D.loopBeats);
           else if (k === 'range') txt = D.range === 0.5 ? 'WIDE' : '±' + Math.round(D.range * 100) + '%';
-          else if (k === 'fxType') txt = E.FX[D.fxType] + ' ▾';
-          else if (k === 'fxBeatUp' && el.textContent !== '+') txt = BEATL[BEATS.indexOf(D.fxBeat)] + ' ütem';
           else if (k === 'xf') txt = 'X: ' + D.xfAssign;
           else if (k === 'jumpSize') txt = D.jumpBeats + ' ütem';
           else if (k === 'play') txt = D.playing ? '❚❚' : '▶';
           else if (k.indexOf('hot') === 0) { var hn = +k.slice(3), set = D.hot[hn] != null; if (el._set !== set) { el._set = set; el.classList.toggle('set', set); el.style.background = set ? HOTC[hn] : ''; } }
         } else if (o.id === 'colorType') txt = 'COLOR: ' + E.COLOR[S.color];
+        else if (o.id === 'fx.type') { var pv = E.fxParamValue(), ms = E.fxMs(); txt = el.getAttribute('data-fxbeat') ? E.fxLabel(FXS.type, pv) + (ms != null ? ' · ' + ms + ' ms' : '') : E.FX[FXS.type].name + ' ▾'; }
+        else if (o.id === 'fx.auto') txt = FXS.tap ? 'AUTO' : E.fxBpm().toFixed(1);
+        else if (o.id === 'fx.tap') txt = FXS.tap ? FXS.tap.toFixed(1) : 'TAP';
+        else if (o.id === 'fx.on') { var bp = E.fxBeatPos(), blink = FXS.on && bp != null && (bp - Math.floor(bp)) > 0.5; if (el._bl !== blink) { el._bl = blink; el.classList.toggle('blink', blink); } }
         if (txt != null) setText(el, txt);
       } else if (c.type === 'knob') {
         var v = c.get(); if (el._v !== v) { el._v = v; el.firstChild.style.transform = 'rotate(' + ((v - c.min) / (c.max - c.min) * 270 - 135) + 'deg)'; el.classList.toggle('mod', Math.abs(v - c.def) > 0.02); el.classList.toggle('kill', c.min === -1 && v <= -0.99); }
@@ -350,33 +364,160 @@ var UI = (function () {
   /* ---------- sheets ---------- */
   function isOpen(id) { return $('#' + id).classList.contains('show'); }
   function closeSheets() { $$('.sheet').forEach(function (s) { s.classList.remove('show'); }); }
-  function openSheet(id) { closeSheets(); $('#' + id).classList.add('show'); if (id === 'settings') syncSettings(); if (id === 'lib') renderLibMarks(); buzz(); }
+  var sheetAt = 0;
+  // swallow the "ghost click" that follows the touch which opened a sheet
+  var downAt = 0;
+  document.addEventListener('pointerdown', function () { downAt = Date.now(); }, true);
+  document.addEventListener('click', function (e) { if (downAt <= sheetAt && Date.now() - sheetAt < 1000 && e.target.closest && e.target.closest('.sheet')) { e.stopPropagation(); e.preventDefault(); } }, true);
+  function openSheet(id) { closeSheets(); sheetAt = Date.now(); $('#' + id).classList.add('show'); if (id === 'settings') syncSettings(); if (id === 'lib') renderLibMarks(); buzz(); }
   $$('[data-close]').forEach(function (b) { b.addEventListener('click', function () { $('#' + b.getAttribute('data-close')).classList.remove('show'); }); });
 
   /* FX picker */
-  var fxDeck = 0;
-  function openFxPick(d) {
-    fxDeck = d; var D = DK[d]; $('#fxPickT').textContent = 'Beat FX – ' + LET[d] + ' deck';
-    $('#fxGrid').innerHTML = E.FX_ORDER.map(function (k) { return '<button class="fxc' + (D.fxType === k ? ' on' : '') + '" data-fx="' + k + '"><b>' + E.FX[k] + '</b><span>' + esc(E.FX_HELP[k]) + '</span></button>'; }).join('');
-    $$('#fxGrid [data-fx]').forEach(function (b) { b.addEventListener('click', function () { DK[fxDeck].setFx({ type: b.getAttribute('data-fx') }); closeSheets(); toast(LET[fxDeck] + ' FX: ' + E.FX[b.getAttribute('data-fx')], 1200); }); });
+  function openFxPick() {
+    $('#fxPickT').textContent = 'BEAT FX – ' + (FXS.ch === 4 ? 'MASTER' : LET[FXS.ch] + ' csatorna');
+    var html = '';
+    [['Pioneer BEAT FX', false], ['Extra', true]].forEach(function (grp) {
+      html += '<div class="fxgh">' + grp[0] + '</div>';
+      E.FX_ORDER.forEach(function (k) { var f = E.FX[k]; if (!!f.x !== grp[1]) return; html += '<button class="fxc' + (FXS.type === k ? ' on' : '') + '" data-fx="' + k + '"><b>' + f.name + '</b><span>' + esc(f.help) + '</span></button>'; });
+    });
+    $('#fxGrid').innerHTML = html;
+    $$('#fxGrid [data-fx]').forEach(function (b) { b.addEventListener('click', function () { E.fx({ type: b.getAttribute('data-fx') }); closeSheets(); buzz(); toast('BEAT FX: ' + E.FX[b.getAttribute('data-fx')].name, 1200); }); });
     openSheet('fxPick');
   }
-  /* grid editor */
-  var gridDeck = 0, taps = [];
-  function openGrid(d) { if (!DK[d].an) { toast('Előbb tölts be egy számot'); return; } gridDeck = d; openSheet('gridPanel'); updGrid(); }
-  function updGrid() { var D = DK[gridDeck]; $('#gridT').textContent = 'Beatgrid – ' + LET[gridDeck] + ': ' + (D.meta ? D.meta.title : ''); $('#gridInfo').textContent = 'BPM: ' + D.an.bpm.toFixed(2) + ' · első ütem: ' + D.an.grid0.toFixed(3) + ' mp'; invalidate(); }
+  /* ---------- professional beatgrid editor ---------- */
+  var G = { d: 0, focus: 0, span: 2, follow: true, metro: false, undo: [], taps: [], drag: null, lastDraw: 0, sig: '' };
+  var SPANS = [0.25, 0.5, 1, 2, 4, 8];
+  var gc = $('#gCanvas');
+  function gD() { return DK[G.d]; }
+  function openGrid(d) {
+    var D = DK[d]; if (!D.an || !D.buf) { toast('Előbb tölts be egy számot'); return; }
+    G.d = d; G.undo = []; G.follow = D.playing; G.focus = D.playing ? D.pos() : D.an.grid0 + D.beatLen() * 0.5;
+    if (!D.an.orig) D.an.orig = { bpm: D.an.bpm, grid0: D.an.grid0 };
+    $('#gridT').textContent = 'BEATGRID – ' + LET[d] + ': ' + (D.meta ? D.meta.title : '');
+    $('#gBpmIn').value = D.an.bpm.toFixed(3);
+    openSheet('gridPanel'); setTimeout(function () { sizeGrid(); drawGrid(true); }, 30);
+  }
+  function sizeGrid() { var r = gc.getBoundingClientRect(), k = Math.min(2, window.devicePixelRatio || 1); gc.width = Math.max(100, Math.round(r.width * k)); gc.height = Math.max(60, Math.round(r.height * k)); G.sig = ''; }
+  function pushUndo() { var D = gD(); G.undo.push({ bpm: D.an.bpm, grid0: D.an.grid0 }); if (G.undo.length > 50) G.undo.shift(); }
+  function gridChanged() { invalidate(); G.sig = ''; drawGrid(true); }
+  function drawGrid(force) {
+    if (!isOpen('gridPanel')) return;
+    var D = gD(); if (!D.an || !D.buf) return;
+    if (G.follow && D.playing) G.focus = D.pos();
+    var W = gc.width, H = gc.height, g = gc.getContext('2d'), span = G.span, t0 = G.focus - span / 2, t1 = t0 + span;
+    var sig = [W, H, Math.round(t0 * 2000), span, D.an.bpm, D.an.grid0, Math.round(D.pos() * 200), D.cue].join('|');
+    if (!force && sig === G.sig) return; G.sig = sig;
+    g.fillStyle = '#05060a'; g.fillRect(0, 0, W, H);
+    var buf = D.buf, sr = buf.sampleRate, L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
+    var spp = span * sr / W, step = Math.max(1, Math.floor(spp / 48)), cy = H * 0.55, A = H * 0.42;
+    // sample-accurate min/max waveform
+    for (var x = 0; x < W; x++) {
+      var a = Math.floor((t0 + x * span / W) * sr), b = Math.floor((t0 + (x + 1) * span / W) * sr), mn = 0, mx = 0;
+      if (b <= 0 || a >= L.length) continue;
+      a = Math.max(0, a); b = Math.min(L.length, Math.max(b, a + 1));
+      for (var i = a; i < b; i += step) { var v = (L[i] + R[i]) * 0.5; if (v < mn) mn = v; if (v > mx) mx = v; }
+      g.fillStyle = 'rgba(80,170,255,0.9)'; g.fillRect(x, cy - mx * A, 1, Math.max(1, (mx - mn) * A));
+    }
+    // transient markers (kick/onset peaks)
+    var env = Analysis.onsetEnv(buf, Math.max(0, t0), Math.min(buf.duration, t1)), e = env.e, mxE = 0, j;
+    for (j = 0; j < e.length; j++) if (e[j] > mxE) mxE = e[j];
+    g.fillStyle = '#2de2ff';
+    for (j = 2; j < e.length - 2; j++) {
+      if (e[j] > mxE * 0.35 && e[j] >= e[j - 1] && e[j] >= e[j + 1] && e[j] >= e[j - 2] && e[j] >= e[j + 2]) {
+        var tx = (env.t0 + j / env.rate - t0) / span * W; g.beginPath(); g.moveTo(tx, H - 2); g.lineTo(tx - 6, H - 12); g.lineTo(tx + 6, H - 12); g.fill(); j += 20;
+      }
+    }
+    // beat grid
+    var bl = 60 / D.an.bpm, k0 = Math.ceil((t0 - D.an.grid0) / bl);
+    g.font = 'bold ' + Math.round(H * 0.07) + 'px Arial';
+    for (var k = k0; D.an.grid0 + k * bl < t1; k++) {
+      var gx = (D.an.grid0 + k * bl - t0) / span * W, bar = ((k % 4) + 4) % 4 === 0;
+      g.fillStyle = bar ? '#ff3b3b' : 'rgba(255,255,255,0.75)'; g.fillRect(Math.round(gx) - (bar ? 1 : 0), 0, bar ? 3 : 1, H);
+      g.fillStyle = bar ? '#ff8a8a' : '#aaa'; g.fillText(bar ? 'Ü' + (Math.floor(k / 4) + 1) : String(((k % 4) + 4) % 4 + 1), gx + 4, H * 0.1);
+    }
+    // ms scale
+    g.fillStyle = 'rgba(255,255,255,0.35)'; var tick = span <= 0.5 ? 0.01 : span <= 2 ? 0.05 : 0.25;
+    for (var tt = Math.ceil(t0 / tick) * tick; tt < t1; tt += tick) { var sx = (tt - t0) / span * W; g.fillRect(sx, H - 4, 1, 4); }
+    // cue + playhead + focus
+    var cx = (D.cue - t0) / span * W; g.fillStyle = '#ff8a00'; g.fillRect(cx - 1, 0, 2, H * 0.15);
+    var px = (D.pos() - t0) / span * W; if (px >= 0 && px <= W) { g.fillStyle = 'rgba(255,170,0,0.25)'; g.fillRect(px - 4, 0, 8, H); g.fillStyle = '#ffaa00'; g.fillRect(px - 1, 0, 2, H); }
+    g.fillStyle = 'rgba(255,255,255,0.25)'; g.fillRect(W / 2, H * 0.94, 1, H * 0.06);
+    setText($('#gBpm'), D.an.bpm.toFixed(3)); setText($('#gOff'), (D.an.grid0 * 1000).toFixed(1) + ' ms'); setText($('#gPos'), fmt(G.focus) + '.' + ('00' + Math.floor((G.focus % 1) * 1000)).slice(-3));
+    $$('#gridPanel [data-g="follow"]').forEach(function (b) { b.classList.toggle('on', G.follow); });
+    $$('#gridPanel [data-g="metro"]').forEach(function (b) { b.classList.toggle('on', G.metro); });
+  }
+  setInterval(function () { if (isOpen('gridPanel') && (gD().playing || G.follow)) drawGrid(false); }, 66);
+  // drag on the waveform moves the grid (precise)
+  gc.addEventListener('pointerdown', function (e) {
+    var D = gD(); if (!D.an) return; try { gc.setPointerCapture(e.pointerId); } catch (x) {}
+    pushUndo(); G.drag = { x: e.clientX, g0: D.an.grid0, w: gc.getBoundingClientRect().width };
+    var mv = function (ev) { if (ev.pointerId !== e.pointerId || !G.drag) return; var dt = (ev.clientX - G.drag.x) / G.drag.w * G.span; D.an.grid0 = G.drag.g0; D.gridShift(dt); gridChanged(); };
+    var up = function (ev) { if (ev.pointerId !== e.pointerId) return; G.drag = null; gc.removeEventListener('pointermove', mv); gc.removeEventListener('pointerup', up); gc.removeEventListener('pointercancel', up); };
+    gc.addEventListener('pointermove', mv); gc.addEventListener('pointerup', up); gc.addEventListener('pointercancel', up);
+  });
   $$('#gridPanel [data-g]').forEach(function (b) {
     b.addEventListener('click', function () {
-      var D = DK[gridDeck], a = b.getAttribute('data-g'); if (!D.an) return; if (!D.an.orig) D.an.orig = { bpm: D.an.bpm, grid0: D.an.grid0 };
-      var bl = D.beatLen();
-      if (a === 'l5') D.gridShift(-0.005); else if (a === 'r5') D.gridShift(0.005); else if (a === 'l20') D.gridShift(-0.02); else if (a === 'r20') D.gridShift(0.02);
-      else if (a === 'lb') D.gridShift(-bl); else if (a === 'rb') D.gridShift(bl); else if (a === 'half') D.setBpm(D.an.bpm / 2); else if (a === 'dbl') D.setBpm(D.an.bpm * 2);
-      else if (a === 'm01') D.setBpm(D.an.bpm - 0.01); else if (a === 'p01') D.setBpm(D.an.bpm + 0.01); else if (a === 'here') D.gridHere();
-      else if (a === 'reset') { D.an.bpm = D.an.orig.bpm; D.an.grid0 = D.an.orig.grid0; D.setBpm(D.an.bpm); }
-      else if (a === 'tap') { var now = performance.now(); if (taps.length && now - taps[taps.length - 1] > 2000) taps = []; taps.push(now); if (taps.length > 8) taps.shift(); if (taps.length >= 4) D.setBpm(60000 / ((taps[taps.length - 1] - taps[0]) / (taps.length - 1)) / D.tempoRate()); b.textContent = 'TAP (' + taps.length + ')'; }
-      buzz(); updGrid();
+      var D = gD(), a = b.getAttribute('data-g'); if (!D.an) return;
+      var bl = D.beatLen(), edit = /^(l10|l1|r1|r10|lh|rh|lb|rb|half|dbl|m1|m01|m001|p001|p01|p1|setbpm|tap|auto|downbeat|reanalyze|reset)$/.test(a);
+      if (edit && a !== 'tap') pushUndo();
+      if (a === 'start') { G.follow = false; G.focus = D.an.grid0 + bl * 0.5; }
+      else if (a === 'back') { G.follow = false; G.focus = Math.max(0, G.focus - 16 * bl); }
+      else if (a === 'fwd') { G.follow = false; G.focus = Math.min(D.duration(), G.focus + 16 * bl); }
+      else if (a === 'here') { G.focus = D.pos(); }
+      else if (a === 'follow') { G.follow = !G.follow; }
+      else if (a === 'zin') { G.span = SPANS[Math.max(0, SPANS.indexOf(G.span) - 1)]; }
+      else if (a === 'zout') { G.span = SPANS[Math.min(SPANS.length - 1, SPANS.indexOf(G.span) + 1)]; }
+      else if (a === 'play') { E.resume(); if (!D.playing && !G.follow) D.seek(Math.max(0, G.focus - bl)); D.toggle(); }
+      else if (a === 'metro') { G.metro = !G.metro; G.mk = -1; }
+      else if (a === 'l10') D.gridShift(-0.010); else if (a === 'r10') D.gridShift(0.010);
+      else if (a === 'l1') D.gridShift(-0.001); else if (a === 'r1') D.gridShift(0.001);
+      else if (a === 'lh') D.gridShift(-bl / 2); else if (a === 'rh') D.gridShift(bl / 2);
+      else if (a === 'lb') D.gridShift(-bl); else if (a === 'rb') D.gridShift(bl);
+      else if (a === 'half' || a === 'dbl' || /^[mp]\d/.test(a)) {
+        // change tempo around the focus point so the grid stays locked there
+        var nb = a === 'half' ? D.an.bpm / 2 : a === 'dbl' ? D.an.bpm * 2 : D.an.bpm + { m1: -0.1, m01: -0.01, m001: -0.001, p001: 0.001, p01: 0.01, p1: 0.1 }[a];
+        setBpmAround(D, nb);
+      }
+      else if (a === 'setbpm') { var v = parseFloat(String($('#gBpmIn').value).replace(',', '.')); if (v > 40 && v < 250) setBpmAround(D, v); else toast('Érvénytelen BPM'); }
+      else if (a === 'tap') {
+        var now = performance.now(); if (G.taps.length && now - G.taps[G.taps.length - 1] > 2000) G.taps = [];
+        G.taps.push(now); if (G.taps.length > 12) G.taps.shift();
+        if (G.taps.length >= 4) { pushUndo(); var bpm = 60000 / ((G.taps[G.taps.length - 1] - G.taps[0]) / (G.taps.length - 1)) / D.tempoRate(); setBpmAround(D, Math.round(bpm * 100) / 100); }
+        b.textContent = 'TAP ' + G.taps.length;
+      }
+      else if (a === 'auto') { var off = Analysis.alignLocal(D.buf, D.an.bpm, D.an.grid0, G.focus, 16, 40); D.gridShift(off); toast('AUTO igazítás: ' + (off >= 0 ? '+' : '') + (off * 1000).toFixed(1) + ' ms', 1800); }
+      else if (a === 'downbeat') { var bar = bl * 4, nearest = D.an.grid0 + Math.round((G.focus - D.an.grid0) / bl) * bl; D.an.grid0 = nearest - Math.floor(nearest / bar) * bar; }
+      else if (a === 'reanalyze') { toast('Pontosítás…', 1200); setTimeout(function () { var r = Analysis.refineGrid(D.buf, D.an); D.an.grid0 = r.grid0; D.setBpm(r.bpm); toast('Pontosítva: ' + r.bpm.toFixed(3) + ' BPM', 2000); gridChanged(); }, 30); }
+      else if (a === 'undo') { var u = G.undo.pop(); if (u) { D.an.grid0 = u.grid0; D.setBpm(u.bpm); } else toast('Nincs mit visszavonni'); }
+      else if (a === 'reset') { D.an.grid0 = D.an.orig.grid0; D.setBpm(D.an.orig.bpm); }
+      $('#gBpmIn').value = D.an.bpm.toFixed(3);
+      buzz(); gridChanged();
     });
   });
+  function setBpmAround(D, nb) {
+    if (!(nb > 30 && nb < 300)) return;
+    var bl = D.beatLen(), k = Math.round((G.focus - D.an.grid0) / bl), anchor = D.an.grid0 + k * bl;
+    D.setBpm(nb); var nbl = D.beatLen(), bar = nbl * 4; D.an.grid0 = anchor - Math.floor(anchor / bar) * bar;
+    if (D.sync) D.doSync(true);
+  }
+  // metronome: sample-accurate clicks on the grid while the deck plays
+  (function () {
+    var actx = E.ctx, out = actx.createGain(); out.gain.value = 0.35; out.connect(actx.destination);
+    setInterval(function () {
+      if (!G.metro || !isOpen('gridPanel')) return;
+      var D = gD(); if (!D.playing || !D.an) { G.mk = -1; return; }
+      var now = actx.currentTime, pos = D.pos(), r = D.rate(), bl = D.beatLen(), horizon = 0.25;
+      var k = Math.ceil((pos - D.an.grid0) / bl - 1e-6);
+      for (; ; k++) {
+        var tb = D.an.grid0 + k * bl, when = now + (tb - pos) / r; if (when > now + horizon) break;
+        if (k <= G.mk || when < now) continue; G.mk = k;
+        var o = actx.createOscillator(), env = actx.createGain(), down = ((k % 4) + 4) % 4 === 0;
+        o.frequency.value = down ? 1760 : 1175; env.gain.setValueAtTime(0, when); env.gain.linearRampToValueAtTime(1, when + 0.001); env.gain.exponentialRampToValueAtTime(0.001, when + 0.04);
+        o.connect(env); env.connect(out); o.start(when); o.stop(when + 0.05);
+      }
+    }, 40);
+  })();
+  window.addEventListener('resize', function () { if (isOpen('gridPanel')) setTimeout(function () { sizeGrid(); drawGrid(true); }, 80); });
   /* settings */
   function syncSettings() { $$('#settings [data-set]').forEach(function (g) { var k = g.getAttribute('data-set'); $$('[data-v]', g).forEach(function (b) { b.classList.toggle('on', String(S[k]) === b.getAttribute('data-v')); }); }); }
   $$('#settings [data-set] [data-v]').forEach(function (b) {
@@ -390,6 +531,13 @@ var UI = (function () {
     });
   });
   $('#midiReset').onclick = function () { if (window.MIDI) { MIDI.reset(); toast('MIDI alaphelyzet'); } };
+  $('#scDiag').onclick = function () {
+    var out = $('#scDiagOut'); out.innerHTML = ''; var rows = {};
+    SC.diagnose(function (name, st, msg) {
+      var r = rows[name]; if (!r) { r = rows[name] = document.createElement('div'); out.appendChild(r); }
+      r.className = 'dg ' + st; r.textContent = (st === 'ok' ? '✓ ' : st === 'hiba' ? '✕ ' : '… ') + name + (msg ? ' – ' + msg : '');
+    }).then(function () { var l = SC.log(); if (l.length) { var pre = document.createElement('div'); pre.className = 'dglog'; pre.textContent = l.slice(-8).join('\n'); out.appendChild(pre); } });
+  };
 
   /* ---------- library ---------- */
   var libItems = [], libRaw = [], libNext = null, libLoader = null, sortMode = 0, onlyMatch = false, cache = {}, cacheKeys = [], analyzed = store('analyzed') || {};
@@ -503,7 +651,13 @@ var UI = (function () {
         var c = cache[m.id]; if (c && Math.abs(c.dur - buf.duration) < 1) return [buf, c];
         stat[d] = 'Elemzés…'; prog[d] = 0.85;
         return new Promise(function (z) { setTimeout(z, 30); }).then(function () { return Analysis.analyze(buf, function (s) { stat[d] = 'Elemzés: ' + s; prog[d] = Math.min(0.98, prog[d] + 0.04); }); })
-          .then(function (an) { an.dur = buf.duration; cacheSet(m.id, an); return [buf, an]; });
+          .then(function (an) {
+            stat[d] = 'Beatgrid pontosítás…';
+            return new Promise(function (z) { setTimeout(z, 20); }).then(function () {
+              try { var r = Analysis.refineGrid(buf, an); an.bpm = r.bpm; an.grid0 = r.grid0; } catch (e) { }
+              an.dur = buf.duration; cacheSet(m.id, an); return [buf, an];
+            });
+          });
       })
       .then(function (x) {
         var buf = x[0], an = x[1]; if (D.playing) throw new Error('A deck közben elindult');
